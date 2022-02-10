@@ -46,7 +46,15 @@ class ModelManager(torch.nn.Module):
         meshes_all_resolutions = [self.template] + low_res_templates
         spirals_indices = self._precompute_spirals(meshes_all_resolutions)
 
+        self._losses = None
+        self._w_latent_cons_loss = float(
+            self._optimization_params['latent_consistency_weight'])
+        self._w_laplacian_loss = float(
+            self._optimization_params['laplacian_weight'])
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
+        self._w_rae_loss = float(self._optimization_params['rae_weight'])
+        self._w_dip_loss = float(self._optimization_params['dip_weight'])
+        self._w_factor_loss = float(self._optimization_params['factor_weight'])
 
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
@@ -62,14 +70,6 @@ class ModelManager(torch.nn.Module):
             weight_decay=self._optimization_params['weight_decay'])
 
         self._latent_regions = self._compute_latent_regions()
-
-        self._losses = None
-        self._w_latent_cons_loss = float(
-            self._optimization_params['latent_consistency_weight'])
-        self._w_laplacian_loss = float(
-            self._optimization_params['laplacian_weight'])
-        self._w_dip_loss = float(self._optimization_params['dip_weight'])
-        self._w_factor_loss = float(self._optimization_params['factor_weight'])
 
         self._rend_device = rendering_device if rendering_device else device
         self.default_shader = HardGouraudShader(
@@ -90,10 +90,33 @@ class ModelManager(torch.nn.Module):
 
         if self._w_latent_cons_loss > 0:
             assert self._swap_features
+
+        if self._w_rae_loss > 0:
+            assert self._w_kl_loss == 0
+            assert self._w_dip_loss == 0 and self._w_factor_loss == 0
+            enc_w_decay = self._optimization_params['weight_decay']
+
+            if float(self._optimization_params['rae_grad_penalty']) > 0:
+                gen_w_decay = enc_w_decay
+            else:
+                gen_w_decay = self._optimization_params['rae_gen_weight_decay']
+
+            self._optimizer = torch.optim.Adam(
+                self._net.en_layers.parameters(),
+                lr=float(self._optimization_params['lr']),
+                weight_decay=float(enc_w_decay))
+            self._rae_gen_optimizer = torch.optim.Adam(
+                self._net.de_layers.parameters(),
+                lr=float(self._optimization_params['lr']),
+                weight_decay=float(gen_w_decay))
+
         if self._w_dip_loss > 0:
+            assert not self._swap_features
             assert self._w_kl_loss > 0
+
         if self._w_factor_loss > 0:
             assert not self._swap_features
+            assert self._w_kl_loss > 0
             self._factor_discriminator = FactorVAEDiscriminator(
                 self._model_params['latent_size']).to(device)
             self._disc_optimizer = torch.optim.Adam(
@@ -103,7 +126,7 @@ class ModelManager(torch.nn.Module):
 
     @property
     def loss_keys(self):
-        return ['reconstruction', 'kl', 'dip', 'factor',
+        return ['reconstruction', 'kl', 'rae', 'dip', 'factor',
                 'latent_consistency', 'laplacian', 'tot']
 
     @property
@@ -220,14 +243,19 @@ class ModelManager(torch.nn.Module):
             if train:
                 losses = iteration_function(data, device, train=True)
             else:
-                with torch.no_grad():
+                if self._w_rae_loss > 0:  # need gradients for gradient penalty
                     losses = iteration_function(data, device, train=False)
+                else:
+                    with torch.no_grad():
+                        losses = iteration_function(data, device, train=False)
             self._add_losses(losses)
         self._divide_losses(it + 1)
 
     def _do_iteration(self, data, device='cpu', train=True):
         if train:
             self._optimizer.zero_grad()
+            if self._w_rae_loss > 0:
+                self._rae_gen_optimizer.zero_grad()
 
         data = data.to(device)
         reconstructed, z, mu, logvar = self.forward(data)
@@ -238,6 +266,11 @@ class ModelManager(torch.nn.Module):
             loss_kl = self._compute_kl_divergence_loss(mu, logvar)
         else:
             loss_kl = torch.tensor(0, device=device)
+
+        if self._w_rae_loss > 0:
+            loss_rae = self._compute_rae_loss(z, reconstructed)
+        else:
+            loss_rae = torch.tensor(0, device=device)
 
         if self._w_dip_loss > 0:
             loss_dip = self._compute_dip_loss(mu, logvar)
@@ -251,6 +284,7 @@ class ModelManager(torch.nn.Module):
 
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
+            self._w_rae_loss * loss_rae + \
             self._w_dip_loss * loss_dip + \
             self._w_latent_cons_loss * loss_z_cons + \
             self._w_laplacian_loss * loss_laplacian
@@ -258,9 +292,12 @@ class ModelManager(torch.nn.Module):
         if train:
             loss_tot.backward()
             self._optimizer.step()
+            if self._w_rae_loss > 0:
+                self._rae_gen_optimizer.step()
 
         return {'reconstruction': loss_recon.item(),
                 'kl': loss_kl.item(),
+                'rae': loss_rae.item(),
                 'dip': loss_dip.item(),
                 'factor': 0,
                 'latent_consistency': loss_z_cons.item(),
@@ -337,6 +374,28 @@ class ModelManager(torch.nn.Module):
     def _compute_kl_divergence_loss(mu, logvar):
         kl = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
         return torch.mean(kl, dim=0)
+
+    @staticmethod
+    def _compute_embedding_loss(z):
+        return (z ** 2).mean(dim=1)
+
+    @staticmethod
+    def _compute_gradient_penalty_loss(z, prediction):
+        grads = torch.autograd.grad(prediction ** 2, z,
+                                    grad_outputs=torch.ones_like(prediction),
+                                    create_graph=True, retain_graph=True)[0]
+        return torch.mean(grads ** 2, dim=1)
+
+    def _compute_rae_loss(self, z, prediction):
+        rae_embedding = float(self._optimization_params['rae_embedding'])  # 0.5
+        rae_grad_penalty = float(self._optimization_params['rae_grad_penalty'])
+
+        rae_loss = rae_embedding * self._compute_embedding_loss(z)
+
+        if rae_grad_penalty > 0:
+            rae_loss += rae_grad_penalty * \
+                    self._compute_gradient_penalty_loss(z, prediction)
+        return rae_loss.mean()
 
     def _compute_dip_loss(self, mu, logvar):
         centered_mu = mu - mu.mean(dim=1, keepdim=True)

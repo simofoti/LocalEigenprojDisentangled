@@ -17,11 +17,17 @@ optimization:
   weight_decay: 0
 
   laplacian_weight: 1
-  kl_weight: 1e-4                                                               # if 0, AE architecture is used
+  kl_weight: 0                                                                  # if 0, AE or RAE architecture is used
 
   latent_consistency_weight: 1                                                  # if 0, no latent consistency loss is used
   latent_consistency_eta1: 0.5
   latent_consistency_eta2: 0.5
+
+  rae_weight: 1                                                                 # if 0, no Regularized AE (RAE). If > 0 kl, dip, and factor weights must be 0
+  rae_embedding: 1e-4
+  rae_grad_penalty: 5e-8                                                        # If 0, L2 normalization is used and must set rae_gen_weight_decay. Default for GP: 5e-8
+  rae_gen_weight_decay: 1e-7                                                    # Ignored if rae_grad_penalty > 0
+
 
   dip_weight: 0                                                                 # if 0, no dip loss is used
   dip_type: i
