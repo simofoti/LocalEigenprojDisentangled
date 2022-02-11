@@ -33,6 +33,7 @@ class Tester:
         self._train_loader = train_load
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
+        self._is_rae = self._manager.is_rae
         self.latent_stats = self.compute_latent_stats(train_load)
 
         self.coma_landmarks = [
@@ -221,6 +222,8 @@ class Tester:
     def random_latent(self, n_samples, z_range_multiplier=1):
         if self._is_vae:  # sample from normal distribution if vae
             z = torch.randn([n_samples, self._manager.model_latent_size])
+        elif self._is_rae:
+            z = self._manager.sample_gaussian_mixture(n_samples)
         else:
             z_means = self.latent_stats['means']
             z_mins = self.latent_stats['mins'] * z_range_multiplier

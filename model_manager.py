@@ -3,6 +3,7 @@ import pickle
 import torch.nn
 import trimesh
 
+from sklearn import mixture
 from torch.nn.functional import cross_entropy
 from torchvision.transforms import ToPILImage
 from torchvision.utils import make_grid
@@ -95,6 +96,7 @@ class ModelManager(torch.nn.Module):
         if self._w_rae_loss > 0:
             assert self._w_kl_loss == 0
             assert self._w_dip_loss == 0 and self._w_factor_loss == 0
+            self._gaussian_mixture = None
             enc_w_decay = self._optimization_params['weight_decay']
 
             if float(self._optimization_params['rae_grad_penalty']) > 0:
@@ -137,6 +139,10 @@ class ModelManager(torch.nn.Module):
     @property
     def is_vae(self):
         return self._w_kl_loss > 0
+
+    @property
+    def is_rae(self):
+        return self._w_rae_loss > 0
 
     @property
     def model_latent_size(self):
@@ -467,6 +473,33 @@ class ModelManager(torch.nn.Module):
         vertex_errors *= self.to_mm_const
         return vertex_errors
 
+    @torch.no_grad()
+    def fit_gaussian_mixture(self, train_loader):
+        latents_list = []
+        for data in train_loader:
+            if self._swap_features:
+                x = data.x[self._batch_diagonal_idx, ::]
+            else:
+                x = data.x
+            latents_list.append(self.encode(x.to(self.device)).detach().cpu())
+        latents = torch.cat(latents_list, dim=0)
+
+        gmm = mixture.GaussianMixture(
+            n_components=self._optimization_params['rae_n_gaussians'],
+            means_init=None,  # TODO: use labels (if available) to compute means
+            covariance_type="full", max_iter=2000, verbose=0, tol=1e-3)
+        gmm.fit(latents.cpu().detach())
+        self._gaussian_mixture = gmm
+
+    def sample_gaussian_mixture(self, n_samples):
+        if not self._gaussian_mixture.is_fitted:
+            raise ArithmeticError("GMM not fitted yet")
+        z = self._gaussian_mixture.sample(n_samples)[0]
+        return torch.tensor(z, device=self.device, dtype=torch.float)
+
+    def score_samples_gaussian_mixture(self, samples):
+        return self._gaussian_mixture.score_samples(samples)
+
     def _reset_losses(self):
         self._losses = {k: 0 for k in self.loss_keys}
 
@@ -579,6 +612,10 @@ class ModelManager(torch.nn.Module):
         opt_name = os.path.join(checkpoint_dir, 'optimizer.pt')
         torch.save({'model': self._net.state_dict()}, net_name)
         torch.save({'optimizer': self._optimizer.state_dict()}, opt_name)
+        if self.is_rae:
+            gmm_name = os.path.join(checkpoint_dir, 'gmm_%08d.pkl' % (epoch + 1))
+            with open(gmm_name, 'wb') as f:
+                pickle.dump(self._gaussian_mixture, f)
 
     def resume(self, checkpoint_dir):
         last_model_name = utils.get_model_list(checkpoint_dir, 'model')
@@ -587,6 +624,10 @@ class ModelManager(torch.nn.Module):
         epochs = int(last_model_name[-11:-3])
         state_dict = torch.load(os.path.join(checkpoint_dir, 'optimizer.pt'))
         self._optimizer.load_state_dict(state_dict['optimizer'])
+        if self.is_rae:
+            gmm_name = last_model_name.replace('model', 'gmm')
+            with open(gmm_name, 'rb') as f:
+                self._gaussian_mixture = pickle.load(f)
         print(f"Resume from epoch {epochs}")
         return epochs
 
