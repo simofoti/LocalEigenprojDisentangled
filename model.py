@@ -87,7 +87,8 @@ class SpiralDeblock(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, in_channels, out_channels, latent_size,
-                 spiral_indices, down_transform, up_transform, is_vae=False):
+                 spiral_indices, down_transform, up_transform,
+                 pre_z_sigmoid=False, is_vae=False):
         super(Model, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -96,6 +97,7 @@ class Model(nn.Module):
         self.down_transform = down_transform
         self.up_transform = up_transform
         self.num_vert = self.down_transform[-1].size(0)
+        self.pre_z_sigmoid = pre_z_sigmoid
         self.is_vae = is_vae
 
         # encoder
@@ -153,7 +155,7 @@ class Model(nn.Module):
         if self.is_vae:
             logvar = self.en_layers[-2](x)
         else:
-            mu = torch.sigmoid(mu)
+            mu = torch.sigmoid(mu) if self.pre_z_sigmoid else mu
             logvar = None
         return mu, logvar
 

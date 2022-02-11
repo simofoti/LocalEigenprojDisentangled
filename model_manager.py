@@ -62,6 +62,7 @@ class ModelManager(torch.nn.Module):
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
                           up_transform=up_transforms,
+                          pre_z_sigmoid=self._model_params['pre_z_sigmoid'],
                           is_vae=self._w_kl_loss > 0).to(device)
 
         self._optimizer = torch.optim.Adam(

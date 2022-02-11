@@ -46,6 +46,7 @@ model:
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
   latent_size: 60                                                               # size of the latent vector
+  pre_z_sigmoid: False
 
 logging_frequency:
   tb_renderings: 5
