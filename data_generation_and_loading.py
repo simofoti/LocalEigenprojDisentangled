@@ -283,6 +283,13 @@ class MeshDataset(Dataset):
     def len(self):
         return len(self.processed_file_names)
 
+    def save_mean_mesh(self):
+        first_mesh_path = os.path.join(self._root, self._train_names[0])
+        first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
+        first_mesh.vertices = self.mean.detach().cpu().numpy()
+        first_mesh.export(
+            os.path.join(self._precomputed_storage_path, 'mean.ply'))
+
 
 class MeshInMemoryDataset(InMemoryDataset):
     def __init__(self, root, precomputed_storage_path='precomputed',
@@ -427,6 +434,25 @@ class MeshInMemoryDataset(InMemoryDataset):
         val_data = self._process_set(self._val_names)
         torch.save(self.collate(val_data), self.processed_paths[2])
 
+    def save_mean_mesh(self):
+        first_mesh_path = os.path.join(self._root, self._train_names[0])
+        first_mesh = trimesh.load_mesh(first_mesh_path, process=False)
+        first_mesh.vertices = self.mean.detach().cpu().numpy()
+        first_mesh.export(
+            os.path.join(self._precomputed_storage_path, 'mean.ply'))
+
 
 if __name__ == '__main__':
-    BodyGenerator('/home/simo/Desktop').save_mean_mesh()
+    import argparse
+    import utils
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', type=str,
+                        default='configurations/default.yaml',
+                        help="Path to the configuration file.")
+    opts = parser.parse_args()
+    conf = utils.get_config(opts.config)
+
+    # BodyGenerator('/home/simo/Desktop').save_mean_mesh()
+    tr_loader, val_loader, te_loader, norm_dict = get_data_loaders(conf, None)
+    tr_loader.dataset.save_mean_mesh()
