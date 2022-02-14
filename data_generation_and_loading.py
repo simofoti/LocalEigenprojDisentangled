@@ -93,12 +93,15 @@ def get_data_loaders(config, template=None):
 
     train_set = MeshInMemoryDataset(
         data_config['dataset_path'], dataset_type='train',
+        precomputed_storage_path=data_config['precomputed_path'],
         normalize=data_config['normalize_data'], template=template)
     validation_set = MeshInMemoryDataset(
         data_config['dataset_path'], dataset_type='val',
+        precomputed_storage_path=data_config['precomputed_path'],
         normalize=data_config['normalize_data'], template=template)
     test_set = MeshInMemoryDataset(
         data_config['dataset_path'], dataset_type='test',
+        precomputed_storage_path=data_config['precomputed_path'],
         normalize=data_config['normalize_data'], template=template)
     normalization_dict = train_set.normalization_dict
 
@@ -199,8 +202,8 @@ class MeshDataset(Dataset):
         files = []
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
-                if f.endswith('.ply'):
-                    files.append(f[:-4])
+                if f.endswith('.ply') or f.endswith('.obj'):
+                    files.append(f)
         return files
 
     def split_data(self, data_split_list_path):
@@ -229,8 +232,8 @@ class MeshDataset(Dataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
         return mesh_verts
@@ -269,11 +272,13 @@ class MeshDataset(Dataset):
 
             if self.pre_transform is not None:
                 data = self.pre_transform(data)
-            torch.save(data, os.path.join(self.processed_dir, fname + '.pt'))
+            torch.save(data, os.path.join(self.processed_dir,
+                                          fname[:-4] + '.pt'))
 
     def get(self, idx):
         filename = self.raw_file_names[idx]
-        return torch.load(os.path.join(self.processed_dir, filename + '.pt'))
+        return torch.load(os.path.join(self.processed_dir,
+                                       filename[:-4] + '.pt'))
 
     def len(self):
         return len(self.processed_file_names)
@@ -294,8 +299,6 @@ class MeshInMemoryDataset(InMemoryDataset):
 
         self._train_names, self._test_names, self._val_names = self.split_data(
             os.path.join(precomputed_storage_path, 'data_split.json'))
-
-        self._processed_files = [f + '.pt' for f in self.raw_file_names]
 
         normalization_dict = self.compute_mean_and_std()
         self._normalization_dict = normalization_dict
@@ -337,8 +340,8 @@ class MeshInMemoryDataset(InMemoryDataset):
         files = []
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
-                if f.endswith('.ply'):
-                    files.append(f[:-4])
+                if f.endswith('.ply') or f.endswith('.obj'):
+                    files.append(f)
         return files
 
     def split_data(self, data_split_list_path):
@@ -367,8 +370,8 @@ class MeshInMemoryDataset(InMemoryDataset):
         return train_list, test_list, val_list
 
     def load_mesh(self, filename, show=False):
-        mesh_path = os.path.join(self._root, filename + '.ply')
-        mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+        mesh_path = os.path.join(self._root, filename)
+        mesh = trimesh.load_mesh(mesh_path, process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                   requires_grad=False)
         if show:
