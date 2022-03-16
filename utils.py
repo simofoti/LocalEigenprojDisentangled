@@ -10,7 +10,9 @@ import networkx as nx
 import numpy as np
 from collections import Counter
 from torch_geometric.data import Data
-from torch_geometric.utils import get_laplacian
+from torch_geometric.utils import get_laplacian, to_scipy_sparse_matrix
+from torch_geometric.utils import subgraph
+from scipy.sparse.linalg import eigsh
 
 
 def get_config(config):
@@ -39,6 +41,7 @@ def load_template(mesh_path):
     data = torch_geometric.transforms.FaceToEdge(False)(data)
     data.laplacian = torch.sparse_coo_tensor(
         *get_laplacian(data.edge_index, normalization='rw'))
+    data = torch_geometric.transforms.GenerateMeshNormals()(data)
     return data
 
 
@@ -114,6 +117,18 @@ def is_contour(colors, center_index, ring_indices):
     return False
 
 
+def compute_local_eigenvectors(template, k=50):
+    evecs = {}
+    for region_name, vertex_selection in template.feat_and_cont.items():
+        edge_index_subset = subgraph(vertex_selection['feature'],
+                                     template.edge_index,
+                                     relabel_nodes=True)[0]
+        graph_lapl = to_scipy_sparse_matrix(
+            *get_laplacian(edge_index_subset, normalization=None))
+        evecs[region_name] = eigsh(graph_lapl, k=k, which='SM')[1]
+    return evecs
+
+
 def to_torch_sparse(spmat):
     return torch.sparse_coo_tensor(
         torch.LongTensor([spmat.tocoo().row, spmat.tocoo().col]),
@@ -158,4 +173,14 @@ def get_model_list(dirname, key):
     gen_models.sort()
     last_model_name = gen_models[-1]
     return last_model_name
+
+
+def compute_signed_distances(x, template, std_x=None):
+    if std_x is None:
+        diff = x - template.pos
+    else:
+        diff = x * std_x  # if x is normalized equivalent to above
+    signs = torch.sign((diff * template.norm).sum(dim=-1))
+    modules = diff.norm(dim=-1, p=2)
+    return (signs * modules).unsqueeze(-1)  # unsqueeze for mat multiplication
 

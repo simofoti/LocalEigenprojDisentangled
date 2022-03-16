@@ -3,6 +3,8 @@ import pickle
 import torch.nn
 import trimesh
 
+import numpy as np
+
 from sklearn import mixture
 from torch.nn.functional import cross_entropy
 from torchvision.transforms import ToPILImage
@@ -56,6 +58,8 @@ class ModelManager(torch.nn.Module):
         self._w_rae_loss = float(self._optimization_params['rae_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
         self._w_factor_loss = float(self._optimization_params['factor_weight'])
+        self._w_lep_loss = float(
+            self._optimization_params['local_eigenprojection_weight'])
 
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
@@ -92,6 +96,12 @@ class ModelManager(torch.nn.Module):
 
         if self._w_latent_cons_loss > 0:
             assert self._swap_features
+
+        if self._w_lep_loss > 0:
+            self._local_eigenvectors = utils.compute_local_eigenvectors(
+                template=self.template, k=50)
+            self._verts_std = None
+            self._local_ep_means, self._local_ep_stds = None, None
 
         if self._w_rae_loss > 0:
             assert self._w_kl_loss == 0
@@ -130,7 +140,8 @@ class ModelManager(torch.nn.Module):
     @property
     def loss_keys(self):
         return ['reconstruction', 'kl', 'rae', 'dip', 'factor',
-                'latent_consistency', 'laplacian', 'tot']
+                'latent_consistency', 'local_eigenprojection',
+                'laplacian', 'tot']
 
     @property
     def latent_regions(self):
@@ -216,6 +227,73 @@ class ModelManager(torch.nn.Module):
         return {k: [i * region_size, (i + 1) * region_size]
                 for i, k in enumerate(region_names)}
 
+    def initialize_local_eigenvectors(self, train_loader, normalization_dict):
+        if self._w_lep_loss > 0:
+            if self._normalized_data:  # important for projection
+                self._verts_std = normalization_dict['std']
+
+            # Initial eigenvectors are associated to low frequencies. Also, the
+            # first one has an associated eigenvalue of 0 and the second is
+            # describing the order of the vertices in the mesh (Fiedler vector).
+            # It may be useful to exclude the first n eigenvectors.
+            initial_ev = self._optimization_params[
+                'local_eigenvectors_remove_first_n']
+            for k, local_evs in self._local_eigenvectors.items():
+                self._local_eigenvectors[k] = local_evs[:, initial_ev:]
+
+            local_eps = {k: [] for k in self._local_eigenvectors.keys()}
+            for data in train_loader:
+                local_ep = self._local_eigenproject_sigend_distances(data.x)
+                for k in local_eps.keys():
+                    local_eps[k].append(local_ep[k])
+
+            local_ep_means = {k: torch.mean(torch.cat(epm, dim=0), dim=0)
+                              for k, epm in local_eps.items()}
+            local_ep_stds = {k: torch.std(torch.cat(epm, dim=0), dim=0)
+                             for k, epm in local_eps.items()}
+
+            if self._optimization_params['local_eigenprojection_max_variance']:
+                order_variance = {
+                    k: np.argsort(- eps.detach().cpu().numpy())
+                    for k, eps in local_ep_stds.items()}
+                for k, order in order_variance.items():
+                    self._local_eigenvectors[k] = \
+                        self._local_eigenvectors[k][:, order]
+                    local_ep_means[k] = local_ep_means[k][order]
+                    local_ep_stds[k] = local_ep_stds[k][order]
+
+            # select only relevant eigenvectors and make sure everything
+            # that is needed for eigenprojection is on the correct device
+            for k, local_evs in self._local_eigenvectors.items():
+                local_latent_size = self._latent_regions[k][1] - \
+                                    self._latent_regions[k][0]
+                local_evs = torch.tensor(local_evs, device=self.device)
+                self._local_eigenvectors[k] = local_evs[:, :local_latent_size]
+                local_ep_means[k] = \
+                    local_ep_means[k][:local_latent_size].to(self.device)
+                local_ep_stds[k] = \
+                    local_ep_stds[k][:local_latent_size].to(self.device)
+            self._local_ep_means = local_ep_means
+            self._local_ep_stds = local_ep_stds
+            self.template.norm = self.template.norm.to(self.device)
+            if self._normalized_data:
+                self._verts_std = self._verts_std.to(self.device)
+
+    def _local_eigenproject_sigend_distances(self, x):
+        sd = utils.compute_signed_distances(x, self.template, self._verts_std)
+        projections = {}
+        for k, u_local in self._local_eigenvectors.items():
+            region_selector = self.template.feat_and_cont[k]['feature']
+            local_projection = torch.tensor(u_local.T) @ sd[:, region_selector]
+            projections[k] = local_projection.squeeze(dim=-1)
+        return projections
+
+    def _local_eigenproject(self, sd, region):
+        region_selector = self.template.feat_and_cont[region]['feature']
+        u_local = self._local_eigenvectors[region]
+        local_projection = u_local.t() @ sd[:, region_selector]
+        return local_projection.squeeze(dim=-1)
+
     def forward(self, data):
         return self._net(data.x)
 
@@ -289,11 +367,18 @@ class ModelManager(torch.nn.Module):
         else:
             loss_z_cons = torch.tensor(0, device=device)
 
+        if self._w_lep_loss > 0:
+            loss_local_eigenproj = \
+                self._compute_local_eigenprojection_loss(z, reconstructed)
+        else:
+            loss_local_eigenproj = torch.tensor(0, device=device)
+
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
             self._w_rae_loss * loss_rae + \
             self._w_dip_loss * loss_dip + \
             self._w_latent_cons_loss * loss_z_cons + \
+            self._w_lep_loss * loss_local_eigenproj + \
             self._w_laplacian_loss * loss_laplacian
 
         if train:
@@ -308,6 +393,7 @@ class ModelManager(torch.nn.Module):
                 'dip': loss_dip.item(),
                 'factor': 0,
                 'latent_consistency': loss_z_cons.item(),
+                'local_eigenprojection': loss_local_eigenproj.item(),
                 'laplacian': loss_laplacian.item(),
                 'tot': loss_tot.item()}
 
@@ -456,6 +542,19 @@ class ModelManager(torch.nn.Module):
         return (1 / (bs ** 3 - bs ** 2)) * \
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
+
+    def _compute_local_eigenprojection_loss(self, z, x_out):
+        sd = utils.compute_signed_distances(x_out, self.template,
+                                            self._verts_std)
+        lep_loss = torch.zeros(x_out.shape[0], device=self.device)
+        for k, z_local_range in self._latent_regions.items():
+            local_sd_ep = self._local_eigenproject(sd, k)
+            norm_local_sd_ep = \
+                (local_sd_ep - self._local_ep_means[k]) / self._local_ep_stds[k]
+            lep_loss += torch.mean(
+                (z[:, z_local_range[0]:z_local_range[1]] - norm_local_sd_ep)**2,
+                dim=1)
+        return lep_loss.mean()
 
     @staticmethod
     def _permute_latent_dims(latent_sample):

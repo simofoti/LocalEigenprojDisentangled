@@ -53,6 +53,8 @@ manager = ModelManager(
 train_loader, validation_loader, test_loader, normalization_dict = \
     get_data_loaders(config, manager.template)
 
+manager.initialize_local_eigenvectors(train_loader, normalization_dict)
+
 train_visualization_batch = next(iter(train_loader))
 validation_visualization_batch = next(iter(validation_loader))
 

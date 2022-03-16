@@ -22,3 +22,7 @@ meshes2fit/
 precomputed_bodies/
 
 precomputed_cvpr/
+
+precomputed_craniofacial/
+
+precomputed_facial/
