@@ -78,5 +78,8 @@ for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
     if (epoch + 1) % config['logging_frequency']['save_weights'] == 0:
         manager.save_weights(checkpoint_dir, epoch)
 
+if manager.is_rae:
+    manager.fit_gaussian_mixture(train_loader)
+
 Tester(manager, normalization_dict, train_loader, test_loader,
        output_directory, config)()
