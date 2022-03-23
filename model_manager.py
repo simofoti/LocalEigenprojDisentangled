@@ -141,7 +141,7 @@ class ModelManager(torch.nn.Module):
     def loss_keys(self):
         return ['reconstruction', 'kl', 'rae', 'dip', 'factor',
                 'latent_consistency', 'local_eigenprojection',
-                'laplacian', 'tot']
+                'local_eigenprojection_gen', 'laplacian', 'tot']
 
     @property
     def latent_regions(self):
@@ -368,10 +368,13 @@ class ModelManager(torch.nn.Module):
             loss_z_cons = torch.tensor(0, device=device)
 
         if self._w_lep_loss > 0:
-            loss_local_eigenproj = \
-                self._compute_local_eigenprojection_loss(z, reconstructed)
+            loss_local_eigenproj = self._compute_local_eigenprojection_loss(
+                mu, data.x.detach())
+            loss_local_eigenproj_gen = self._compute_local_eigenprojection_loss(
+                mu.detach(), reconstructed) * 0.5
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
+            loss_local_eigenproj_gen = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
@@ -382,6 +385,9 @@ class ModelManager(torch.nn.Module):
             self._w_laplacian_loss * loss_laplacian
 
         if train:
+            if self._w_lep_loss > 0:
+                loss_local_eigenproj_gen.backward(retain_graph=True)
+                self._net.en_layers.zero_grad()
             loss_tot.backward()
             self._optimizer.step()
             if self._w_rae_loss > 0:
@@ -394,6 +400,7 @@ class ModelManager(torch.nn.Module):
                 'factor': 0,
                 'latent_consistency': loss_z_cons.item(),
                 'local_eigenprojection': loss_local_eigenproj.item(),
+                'local_eigenprojection_gen': loss_local_eigenproj_gen.item(),
                 'laplacian': loss_laplacian.item(),
                 'tot': loss_tot.item()}
 
@@ -543,16 +550,16 @@ class ModelManager(torch.nn.Module):
                (torch.sum(torch.max(zero, lr - dr + eta2)) +
                 torch.sum(torch.max(zero, lg - dg + eta1)))
 
-    def _compute_local_eigenprojection_loss(self, z, x_out):
-        sd = utils.compute_signed_distances(x_out, self.template,
+    def _compute_local_eigenprojection_loss(self, z, x):
+        sd = utils.compute_signed_distances(x, self.template,
                                             self._verts_std)
-        lep_loss = torch.zeros(x_out.shape[0], device=self.device)
+        lep_loss = torch.zeros(x.shape[0], device=self.device)
         for k, z_local_range in self._latent_regions.items():
             local_sd_ep = self._local_eigenproject(sd, k)
             norm_local_sd_ep = \
                 (local_sd_ep - self._local_ep_means[k]) / self._local_ep_stds[k]
-            lep_loss += torch.mean(
-                (z[:, z_local_range[0]:z_local_range[1]] - norm_local_sd_ep)**2,
+            lep_loss += torch.mean(torch.abs(
+                z[:, z_local_range[0]:z_local_range[1]] - norm_local_sd_ep),
                 dim=1)
         return lep_loss.mean()
 
@@ -591,8 +598,6 @@ class ModelManager(torch.nn.Module):
         self._gaussian_mixture = gmm
 
     def sample_gaussian_mixture(self, n_samples):
-        if not self._gaussian_mixture.is_fitted:
-            raise ArithmeticError("GMM not fitted yet")
         z = self._gaussian_mixture.sample(n_samples)[0]
         return torch.tensor(z, device=self.device, dtype=torch.float)
 

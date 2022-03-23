@@ -17,11 +17,11 @@ optimization:
   lr: 1e-4
   weight_decay: 0
 
-  laplacian_weight: 1
+  laplacian_weight: 50
   kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
 
-  local_eigenprojection_weight: 0.1                                             # if 0, the latent is not proportional to the local eigenprojections
-  local_eigenvectors_remove_first_n: 2                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
+  local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
+  local_eigenvectors_remove_first_n: 0                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
   local_eigenprojection_max_variance: True                                      # if True, eigenprojections with highest variance (over train set) are used
 
   latent_consistency_weight: 0                                                  # if 0, no latent consistency loss is used
