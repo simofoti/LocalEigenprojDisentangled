@@ -19,6 +19,7 @@ optimization:
 
   laplacian_weight: 50
   kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
+  is_gan: False                                                                 # if True, GAN training is compatible only with local eigenprojection
 
   local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
   local_eigenprojection_gen_weight: 0.5

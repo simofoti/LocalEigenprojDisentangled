@@ -8,22 +8,27 @@ data:
   std_pca_latent: 3                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
   number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
   number_of_workers: 8
-  swap_features: True                                                           # if True, the resulting batch size will be batch_size^2
+  swap_features: False                                                          # if True, the resulting batch size will be batch_size^2
 
 optimization:
   epochs: 40
-  batch_size: 4                                                                 # if swap_features=True, the resulting batch size will be batch_size^2
+  batch_size: 16                                                                # if swap_features=True, the resulting batch size will be batch_size^2
   lr: 1e-4
   weight_decay: 0
 
-  laplacian_weight: 1
-  kl_weight: 0                                                                  # if 0, AE or RAE architecture is used
+  laplacian_weight: 50
+  kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
+  is_gan: False                                                                 # if True, GAN training is compatible only with local eigenprojection
 
-  latent_consistency_weight: 1                                                  # if 0, no latent consistency loss is used
+  local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
+  local_eigenvectors_remove_first_n: 0                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
+  local_eigenprojection_max_variance: False                                     # if True, eigenprojections with highest variance (over train set) are used
+
+  latent_consistency_weight: 0                                                  # if 0, no latent consistency loss is used
   latent_consistency_eta1: 0.5
   latent_consistency_eta2: 0.5
 
-  rae_weight: 1                                                                 # if 0, no Regularized AE (RAE). If > 0 kl, dip, and factor weights must be 0
+  rae_weight: 0                                                                 # if 0, no Regularized AE (RAE). If > 0 kl, dip, and factor weights must be 0
   rae_embedding: 1e-4
   rae_grad_penalty: 5e-8                                                        # If 0, L2 normalization is used and must set rae_gen_weight_decay. Default for GP: 5e-8
   rae_gen_weight_decay: 1e-7                                                    # Ignored if rae_grad_penalty > 0
