@@ -99,7 +99,10 @@ class ModelManager(torch.nn.Module):
 
         if self._w_lep_loss > 0:
             self._local_eigenvectors = utils.compute_local_eigenvectors(
-                template=self.template, k=50)
+                template=self.template,
+                k=int(self._optimization_params['local_eigendecomposition_k']))
+            self._w_lep_gen_loss = float(
+                self._optimization_params['local_eigenprojection_gen_weight'])
             self._verts_std = None
             self._local_ep_means, self._local_ep_stds = None, None
 
@@ -371,11 +374,17 @@ class ModelManager(torch.nn.Module):
         if self._w_lep_loss > 0:
             loss_local_eigenproj = self._compute_local_eigenprojection_loss(
                 mu, data.x.detach())
-            loss_local_eigenproj_gen = self._compute_local_eigenprojection_loss(
-                mu.detach(), reconstructed) * 0.5
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
+
+        if self._w_lep_loss > 0 and self._w_lep_gen_loss > 0:
+            loss_local_eigenproj_gen = self._compute_local_eigenprojection_loss(
+                mu.detach(), reconstructed)
+            loss_local_eigenproj_gen_weighted = loss_local_eigenproj_gen * \
+                self._w_lep_gen_loss * self._w_lep_loss
+        else:
             loss_local_eigenproj_gen = torch.tensor(0, device=device)
+            loss_local_eigenproj_gen_weighted = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + \
             self._w_kl_loss * loss_kl + \
@@ -386,8 +395,8 @@ class ModelManager(torch.nn.Module):
             self._w_laplacian_loss * loss_laplacian
 
         if train:
-            if self._w_lep_loss > 0:
-                loss_local_eigenproj_gen.backward(retain_graph=True)
+            if self._w_lep_gen_loss > 0:
+                loss_local_eigenproj_gen_weighted.backward(retain_graph=True)
                 self._net.en_layers.zero_grad()
             loss_tot.backward()
             self._optimizer.step()
