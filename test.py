@@ -33,8 +33,13 @@ class Tester:
         self._train_loader = train_load
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
+        self._is_gan = self._manager.is_gan
         self._is_rae = self._manager.is_rae
-        self.latent_stats = self.compute_latent_stats(train_load)
+        self._is_feature_disentangled = \
+            self._config['data']['swap_features'] or \
+            self._config['optimization']['local_eigenprojection_weight'] > 0
+        if not self._is_gan:
+            self.latent_stats = self.compute_latent_stats(train_load)
 
         self.coma_landmarks = [
             1337, 1344, 1163, 878, 3632, 2496, 2428, 2291, 2747,
@@ -50,12 +55,14 @@ class Tester:
         self.set_rendering_background_color([1, 1, 1])
 
         # Qualitative evaluations
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled and not self._is_gan:
             self.latent_swapping(next(iter(self._test_loader)).x)
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
         self.random_generation_and_save(n_samples=16)
-        self.interpolate()
+        if not self._is_gan:
+            self.interpolate()
+
         if self._config['data']['dataset_type'] == 'faces':
             self.direct_manipulation()
 
@@ -121,7 +128,7 @@ class Tester:
 
     def per_variable_range_experiments(self, z_range_multiplier=1,
                                        use_z_stats=True):
-        if self._is_vae and not use_z_stats:
+        if (self._is_vae or self._is_gan) and not use_z_stats:
             latent_size = self._manager.model_latent_size
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
@@ -169,7 +176,7 @@ class Tester:
         # are shown in the same frame. Only error maps are shown.
         grid_frames = []
         grid_nrows = 8
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled:
             z_size = self._config['model']['latent_size']
             grid_nrows = z_size // len(self._manager.latent_regions)
 
@@ -220,7 +227,7 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
 
     def random_latent(self, n_samples, z_range_multiplier=1):
-        if self._is_vae:  # sample from normal distribution if vae
+        if self._is_vae or self._is_gan:  # sample from normal distribution
             z = torch.randn([n_samples, self._manager.model_latent_size])
         elif self._is_rae:
             z = self._manager.sample_gaussian_mixture(n_samples)
