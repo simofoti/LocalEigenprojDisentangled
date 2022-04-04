@@ -276,6 +276,7 @@ class ModelManager(torch.nn.Module):
             self._local_ep_means = local_ep_means
             self._local_ep_stds = local_ep_stds
             self.template.norm = self.template.norm.to(self.device)
+            self.template.pos = self.template.pos.to(self.device)
             if self._normalized_data:
                 self._verts_std = self._verts_std.to(self.device)
 
@@ -298,9 +299,9 @@ class ModelManager(torch.nn.Module):
         return self._net(data.x)
 
     @torch.no_grad()
-    def encode(self, data):
+    def encode(self, x):
         self._net.eval()
-        return self._net.encode(data)[0]
+        return self._net.encode(x)[0]
 
     @torch.no_grad()
     def generate(self, z):
