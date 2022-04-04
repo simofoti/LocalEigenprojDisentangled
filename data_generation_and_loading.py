@@ -344,10 +344,13 @@ class MeshInMemoryDataset(InMemoryDataset):
         pass
 
     def find_filenames(self):
+        root_l = len(self._root)
         files = []
         for dirpath, _, fnames in os.walk(self._root):
             for f in fnames:
                 if f.endswith('.ply') or f.endswith('.obj'):
+                    absolute_path = os.path.join(dirpath, f)
+                    f = absolute_path[dirpath.index(self._root) + root_l + 1:]
                     files.append(f)
         return files
 
