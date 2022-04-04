@@ -45,7 +45,8 @@ def load_template(mesh_path):
     return data
 
 
-def extract_feature_and_contour_from_colour(colored):
+def extract_feature_and_contour_from_colour(colored,
+                                            append_contour_to_feature=False):
     # assuming that the feature is colored in red and its contour in black
     if isinstance(colored, torch_geometric.data.Data):
         assert hasattr(colored, 'colors')
@@ -105,6 +106,9 @@ def extract_feature_and_contour_from_colour(colored):
     # surrounding_idx = np.squeeze(np.argwhere(all_distances < threshold))
     # colored.visual.vertex_colors[surrounding_idx] = [0, 0, 0, 255]
     # colored.show()
+    if append_contour_to_feature:
+        for fc in features.values():
+            fc['feature'] += fc['contour']
     return features
 
 
