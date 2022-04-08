@@ -38,7 +38,9 @@ class ModelManager(torch.nn.Module):
         self._optimization_params = configurations['optimization']
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
+        self._epochs = self._optimization_params['epochs']
 
+        self.train_set_length = None
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
         self.template = utils.load_template(
@@ -54,7 +56,7 @@ class ModelManager(torch.nn.Module):
             self._optimization_params['latent_consistency_weight'])
         self._w_laplacian_loss = float(
             self._optimization_params['laplacian_weight'])
-        self._is_gan = self._optimization_params['is_gan']
+        self._is_gan = float(self._optimization_params['gan_disc_lr']) > 0
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
         self._w_rae_loss = float(self._optimization_params['rae_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
@@ -74,7 +76,7 @@ class ModelManager(torch.nn.Module):
         self._optimizer = torch.optim.Adam(
             self._net.parameters(),
             lr=float(self._optimization_params['lr']),
-            weight_decay=self._optimization_params['weight_decay'])
+            weight_decay=float(self._optimization_params['weight_decay']))
 
         self._latent_regions = self._compute_latent_regions()
 
@@ -140,25 +142,26 @@ class ModelManager(torch.nn.Module):
             self._disc_optimizer = torch.optim.Adam(
                 self._factor_discriminator.parameters(),
                 lr=float(self._optimization_params['lr']), betas=(0.5, 0.9),
-                weight_decay=self._optimization_params['weight_decay'])
+                weight_decay=float(self._optimization_params['weight_decay']))
 
         if self._is_gan:
             assert not self._swap_features
             assert self._w_kl_loss <= 0
             assert self._w_dip_loss <= 0 and self._w_factor_loss <= 0
             assert not self._model_params['pre_z_sigmoid']
+            self._iteration_counter = 0
             self._optimizer = torch.optim.Adam(
                 self._net.de_layers.parameters(),
                 lr=float(self._optimization_params['lr']),
-                weight_decay=self._optimization_params['weight_decay'])
-            self._disc_optimizer = torch.optim.Adam(
+                weight_decay=float(self._optimization_params['weight_decay']))
+            self._disc_optimizer = torch.optim.SGD(
                 self._net.en_layers.parameters(),
-                lr=float(self._optimization_params['lr']),
-                weight_decay=self._optimization_params['weight_decay'])
+                lr=float(self._optimization_params['gan_disc_lr']),
+                weight_decay=float(self._optimization_params['weight_decay']))
 
     @property
     def loss_keys(self):
-        return ['reconstruction', 'kl', 'rae', 'dip', 'factor',
+        return ['reconstruction', 'kl', 'rae', 'dip', 'factor', 'gen', 'disc',
                 'latent_consistency', 'local_eigenprojection',
                 'local_eigenprojection_gen', 'laplacian', 'tot']
 
@@ -429,7 +432,7 @@ class ModelManager(torch.nn.Module):
                 'kl': loss_kl.item(),
                 'rae': loss_rae.item(),
                 'dip': loss_dip.item(),
-                'factor': 0,
+                'factor': 0, 'gen': 0, 'disc': 0,
                 'latent_consistency': loss_z_cons.item(),
                 'local_eigenprojection': loss_local_eigenproj.item(),
                 'local_eigenprojection_gen': loss_local_eigenproj_gen.item(),
@@ -437,22 +440,36 @@ class ModelManager(torch.nn.Module):
                 'tot': loss_tot.item()}
 
     def _do_gan_iteration(self, data, device='cpu', train=True):
+        self._iteration_counter += 1 if train else 0
         self._optimizer.zero_grad()
 
         data = data.to(device)
         z = torch.randn([data.x.shape[0], self.model_latent_size],
                         device=device)
 
+        x_real = data.x
         x_fake = self._net.decode(z)
 
-        loss_gen = self._generator_loss(x_fake)
-        loss_laplacian = self._compute_laplacian_regularizer(x_fake)
+        if self._w_laplacian_loss > 0:
+            loss_laplacian = self._compute_laplacian_regularizer(x_fake)
+        else:
+            loss_laplacian = torch.tensor(0, device=device)
 
         if self._w_lep_loss > 0:
             loss_local_eigenproj = self._compute_local_eigenprojection_loss(
                 z.detach(), x_fake)
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
+
+        if self._optimization_params['gan_noise_anneal'] > 0:
+            noise_std = utils.annealing_coefficient(
+                self._iteration_counter,
+                self._epochs * self.train_set_length,
+                self._optimization_params['gan_noise_anneal_length_percentage'])
+            x_real += noise_std * torch.randn_like(x_real)
+            x_fake += noise_std * torch.randn_like(x_fake)
+
+        loss_gen = self._generator_loss(x_fake)
 
         loss_tot = loss_gen + self._w_lep_loss * loss_local_eigenproj + \
             self._w_laplacian_loss * loss_laplacian
@@ -463,16 +480,18 @@ class ModelManager(torch.nn.Module):
 
         # Train Discriminator
         self._disc_optimizer.zero_grad()
-        loss_disc = self._discriminator_loss(x_real=data.x, x_fake=x_fake)
-        if train:
+        loss_disc = self._discriminator_loss(x_real=x_real, x_fake=x_fake)
+
+        if train and self._iteration_counter % \
+                self._optimization_params['gan_disc_train_every'] == 0:
             loss_disc.backward()
             self._disc_optimizer.step()
-        else:
-            loss_disc = torch.tensor(0)
 
-        return {'gen': loss_gen.item(),
+        return {'reconstruction': 0, 'kl': 0, 'rae': 0, 'dip': 0, 'factor': 0,
+                'latent_consistency': 0, 'local_eigenprojection_gen': 0,
+                'gen': loss_gen.item(),
                 'disc': loss_disc.item(),
-                'local_eigenprojection_gen': loss_local_eigenproj.item(),
+                'local_eigenprojection': loss_local_eigenproj.item(),
                 'laplacian': loss_laplacian.item(),
                 'tot': loss_tot.item()}
 
@@ -635,12 +654,9 @@ class ModelManager(torch.nn.Module):
                 dim=1)
         return lep_loss.mean()
 
-    def _discriminator_loss(self, x_real, x_fake, noise_std=0):
-        if noise_std > 0:
-            x_real += noise_std * torch.randn_like(x_real)
-            x_fake += noise_std * torch.randn_like(x_fake)
+    def _discriminator_loss(self, x_real, x_fake):
         out_real = self._net.encode(x_real)[0]
-        out_fake = self._net.encode(x_fake.contiguous().detach())[0]
+        out_fake = self._net.encode(x_fake.detach())[0]
         loss = torch.mean((out_real - 1) ** 2) + torch.mean(out_fake ** 2)
         return loss / 2
 

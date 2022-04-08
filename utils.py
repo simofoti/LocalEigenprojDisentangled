@@ -188,3 +188,7 @@ def compute_signed_distances(x, template, std_x=None):
     modules = diff.norm(dim=-1, p=2)
     return (signs * modules).unsqueeze(-1)  # unsqueeze for mat multiplication
 
+
+def annealing_coefficient(counter, total, percentage_of_total=100):
+    max(0, 1 - (100 * counter) / (percentage_of_total * total))
+
