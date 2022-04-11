@@ -461,7 +461,7 @@ class ModelManager(torch.nn.Module):
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
 
-        if self._optimization_params['gan_noise_anneal'] > 0:
+        if self._optimization_params['gan_noise_anneal_length_percentage'] > 0:
             noise_std = utils.annealing_coefficient(
                 self._iteration_counter,
                 self._epochs * self.train_set_length,

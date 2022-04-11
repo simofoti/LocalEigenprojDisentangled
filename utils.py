@@ -190,5 +190,5 @@ def compute_signed_distances(x, template, std_x=None):
 
 
 def annealing_coefficient(counter, total, percentage_of_total=100):
-    max(0, 1 - (100 * counter) / (percentage_of_total * total))
+    return max(0, 1 - (100 * counter) / (percentage_of_total * total))
 
