@@ -23,6 +23,7 @@ optimization:
   gan_disc_lr: 1e-4                                                             # if > 0, GAN training. GAN training is compatible only with local eigenprojection
   gan_noise_anneal_length_percentage: 80                                        # Percentage of total iterations across which noise is annealed
   gan_disc_train_every: 5                                                       # If 1, train as frequently as generator
+  gan_type: wgan
 
   local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
   local_eigenprojection_gen_weight: 0.5

@@ -150,12 +150,26 @@ class ModelManager(torch.nn.Module):
             assert self._w_dip_loss <= 0 and self._w_factor_loss <= 0
             assert not self._model_params['pre_z_sigmoid']
             self._iteration_counter = 0
-            self._optimizer = torch.optim.Adam(
+            self._gan_type = self._optimization_params['gan_type']
+            if self._gan_type == 'wgan':
+                gen_opt = torch.optim.RMSprop
+                disc_opt = torch.optim.RMSprop
+                self._disc_terminal_layer = torch.nn.Sequential(
+                    torch.nn.ELU(),
+                    torch.nn.Linear(self._model_params['latent_size'], 1)
+                ).to(device)
+                self._disc_params = [*self._net.en_layers.parameters(),
+                                     *self._disc_terminal_layer.parameters()]
+            else:
+                gen_opt = torch.optim.Adam
+                disc_opt = torch.optim.SGD
+                self._disc_params = self._net.en_layers.parameters()
+            self._optimizer = gen_opt(
                 self._net.de_layers.parameters(),
                 lr=float(self._optimization_params['lr']),
                 weight_decay=float(self._optimization_params['weight_decay']))
-            self._disc_optimizer = torch.optim.SGD(
-                self._net.en_layers.parameters(),
+            self._disc_optimizer = disc_opt(
+                self._disc_params,
                 lr=float(self._optimization_params['gan_disc_lr']),
                 weight_decay=float(self._optimization_params['weight_decay']))
 
@@ -655,15 +669,30 @@ class ModelManager(torch.nn.Module):
         return lep_loss.mean()
 
     def _discriminator_loss(self, x_real, x_fake):
-        out_real = self._net.encode(x_real)[0]
-        out_fake = self._net.encode(x_fake.detach())[0]
-        loss = torch.mean((out_real - 1) ** 2) + torch.mean(out_fake ** 2)
-        return loss / 2
+        if self._gan_type == 'lsgan':
+            out_real = self._net.encode(x_real)[0]
+            out_fake = self._net.encode(x_fake.detach())[0]
+            loss = torch.mean((out_real - 1) ** 2) + torch.mean(out_fake ** 2)
+            loss /= 2
+        else:  # wgan
+            out_real = self._net.encode(x_real)[0]
+            out_real = self._disc_terminal_layer(out_real)
+            out_fake = self._net.encode(x_fake.detach())[0]
+            out_fake = self._disc_terminal_layer(out_fake)
+            loss = - torch.mean(out_real) + torch.mean(out_fake)
+            for p in self._disc_params:
+                p.data.clamp_(-0.01, 0.01)
+        return loss
 
     def _generator_loss(self, x_fake):
-        out_fake = self._net.encode(x_fake)[0]
-        loss = torch.mean((out_fake - 1) ** 2)
-        return loss / 2
+        if self._gan_type == 'lsgan':
+            out_fake = self._net.encode(x_fake)[0]
+            loss = torch.mean((out_fake - 1) ** 2) / 2
+        else:  # wgan
+            out_fake = self._net.encode(x_fake)[0]
+            out_fake = self._disc_terminal_layer(out_fake)
+            loss = - torch.mean(out_fake)
+        return loss
 
     @staticmethod
     def _permute_latent_dims(latent_sample):
