@@ -756,23 +756,34 @@ class ModelManager(torch.nn.Module):
 
     def log_images(self, in_data, writer, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
-        gt_meshes = in_data.x.to(self._rend_device)
-        out_meshes = self.forward(in_data.to(self.device))[0]
-        out_meshes = out_meshes.to(self._rend_device)
+        if not self._is_gan:
+            gt_meshes = in_data.x.to(self._rend_device)
+            out_meshes = self.forward(in_data.to(self.device))[0]
+            out_meshes = out_meshes.to(self._rend_device)
 
-        if self._normalized_data:
-            mean_mesh = normalization_dict['mean'].to(self._rend_device)
-            std_mesh = normalization_dict['std'].to(self._rend_device)
-            gt_meshes = gt_meshes * std_mesh + mean_mesh
-            out_meshes = out_meshes * std_mesh + mean_mesh
+            if self._normalized_data:
+                mean_mesh = normalization_dict['mean'].to(self._rend_device)
+                std_mesh = normalization_dict['std'].to(self._rend_device)
+                gt_meshes = gt_meshes * std_mesh + mean_mesh
+                out_meshes = out_meshes * std_mesh + mean_mesh
 
-        vertex_errors = self.compute_vertex_errors(out_meshes, gt_meshes)
+            vertex_errors = self.compute_vertex_errors(out_meshes, gt_meshes)
 
-        gt_renders = self.render(gt_meshes)
-        out_renders = self.render(out_meshes)
-        errors_renders = self.render(out_meshes, vertex_errors,
-                                     error_max_scale)
-        log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
+            gt_renders = self.render(gt_meshes)
+            out_renders = self.render(out_meshes)
+            errors_renders = self.render(out_meshes, vertex_errors,
+                                         error_max_scale)
+            log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
+        else:
+            z = torch.randn([in_data.x.shape[0], self.model_latent_size],
+                            device=self._rend_device)
+            x_gen = self.generate(z)
+            if self._normalized_data:
+                mean_mesh = normalization_dict['mean'].to(self._rend_device)
+                std_mesh = normalization_dict['std'].to(self._rend_device)
+                x_gen = x_gen * std_mesh + mean_mesh
+            log = self.render(x_gen)
+
         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
         writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
 
