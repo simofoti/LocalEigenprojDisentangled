@@ -18,11 +18,17 @@ optimization:
 
   laplacian_weight: 50
   kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
-  is_gan: False                                                                 # if True, GAN training is compatible only with local eigenprojection
+
+  gan_disc_lr: 0                                                                # if > 0, GAN training. GAN training is compatible only with local eigenprojection
+  gan_noise_anneal_length_percentage: 80                                        # Percentage of total iterations across which noise is annealed
+  gan_disc_train_every: 5                                                       # If 1, train as frequently as generator
+  gan_type: wgan
 
   local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
+  local_eigenprojection_gen_weight: 0.5
   local_eigenvectors_remove_first_n: 0                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
-  local_eigenprojection_max_variance: False                                     # if True, eigenprojections with highest variance (over train set) are used
+  local_eigenprojection_max_variance: True                                      # if True, eigenprojections with highest variance (over train set) are used
+  local_eigendecomposition_k: 50
 
   latent_consistency_weight: 0                                                  # if 0, no latent consistency loss is used
   latent_consistency_eta1: 0.5

@@ -383,7 +383,7 @@ class MeshInMemoryDataset(InMemoryDataset):
         mesh_path = os.path.join(self._root, filename)
         mesh = trimesh.load_mesh(mesh_path, process=False)
         mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
-                                  requires_grad=False)
+                                  requires_grad=False)  # * scale (60 for LYHM)
         if show:
             tm = trimesh.Trimesh(vertices=mesh.vertices,
                                  faces=self._template.face.t().cpu().numpy())
