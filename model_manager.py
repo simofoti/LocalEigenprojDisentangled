@@ -267,7 +267,8 @@ class ModelManager(torch.nn.Module):
         return {k: [i * region_size, (i + 1) * region_size]
                 for i, k in enumerate(region_names)}
 
-    def initialize_local_eigenvectors(self, train_loader, normalization_dict):
+    def initialize_local_eigenvectors(self, train_loader, normalization_dict,
+                                      plot_eigenproj_distributions=False):
         if self._w_lep_loss > 0:
             if self._normalized_data:  # important for projection
                 self._verts_std = normalization_dict['std']
@@ -319,6 +320,20 @@ class ModelManager(torch.nn.Module):
             self.template.pos = self.template.pos.to(self.device)
             if self._normalized_data:
                 self._verts_std = self._verts_std.to(self.device)
+
+            if plot_eigenproj_distributions:
+                all_ep = []
+                for data in train_loader:
+                    x = data.x.to(self.device)
+                    local_ep = self._local_eigenproject_sigend_distances(x)
+                    ep_means = torch.cat(list(self._local_ep_means.values()))
+                    ep_stds = torch.cat(list(self._local_ep_stds.values()))
+                    n_local_ep = (torch.cat(list(local_ep.values()), dim=1) -
+                                  ep_means) / ep_stds
+                    all_ep.append(n_local_ep)
+                utils.plot_eigproj(
+                    torch.cat(all_ep, dim=0),
+                    colors_as_str=list(self.template.feat_and_cont.keys()))
 
     def _local_eigenproject_sigend_distances(self, x):
         sd = utils.compute_signed_distances(x, self.template, self._verts_std)
