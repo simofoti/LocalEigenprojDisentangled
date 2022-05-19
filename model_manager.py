@@ -108,6 +108,8 @@ class ModelManager(torch.nn.Module):
                 self._optimization_params['local_eigenprojection_gen_weight'])
             self._verts_std = None
             self._local_ep_means, self._local_ep_stds = None, None
+        else:
+            self._w_lep_gen_loss = 0
 
         if self._w_rae_loss > 0:
             assert self._w_kl_loss == 0
