@@ -433,11 +433,11 @@ class ModelManager(torch.nn.Module):
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
 
-        if self._w_lep_loss > 0 and self._w_lep_gen_loss > 0:
+        if self._w_lep_gen_loss > 0:
             loss_local_eigenproj_gen = self._compute_local_eigenprojection_loss(
                 mu.detach(), reconstructed)
             loss_local_eigenproj_gen_weighted = loss_local_eigenproj_gen * \
-                self._w_lep_gen_loss * self._w_lep_loss
+                self._w_lep_gen_loss
         else:
             loss_local_eigenproj_gen = torch.tensor(0, device=device)
             loss_local_eigenproj_gen_weighted = torch.tensor(0, device=device)

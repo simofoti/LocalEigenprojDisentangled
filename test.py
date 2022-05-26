@@ -40,6 +40,12 @@ class Tester:
             self._config['optimization']['local_eigenprojection_weight'] > 0
         if not self._is_gan:
             self.latent_stats = self.compute_latent_stats(train_load)
+        else:
+            latent_size = self._manager.model_latent_size
+            self.latent_stats = {'means': torch.zeros(latent_size),
+                                 'stds': torch.ones(latent_size),
+                                 'mins': -3 * torch.ones(latent_size),
+                                 'maxs': 3 * torch.ones(latent_size)}
 
         self.coma_landmarks = [
             1337, 1344, 1163, 878, 3632, 2496, 2428, 2291, 2747,
@@ -50,7 +56,7 @@ class Tester:
             8003, 22260, 12492, 27386, 1969, 31925, 31158, 20963,
             1255, 9881, 32055, 45778, 5355, 27515, 18482, 33691]
 
-    def __call__(self):
+    def __call__(self, quantitative=True):
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
 
@@ -60,26 +66,26 @@ class Tester:
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
         self.random_generation_and_save(n_samples=16)
-        if not self._is_gan:
-            self.interpolate()
+        self.interpolate()
 
-        if self._config['data']['dataset_type'] == 'faces' and not self._is_gan:
+        if self._config['data']['dataset_type'] == 'faces':
             self.direct_manipulation()
 
         # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048)
-        recon_errors = self.reconstruction_errors(self._test_loader)
-        train_set_diversity = self.compute_diversity_train_set()
-        diversity = self.compute_diversity()
-        specificity = self.compute_specificity()
-        metrics = {'recon_errors': recon_errors,
-                   'train_set_diversity': train_set_diversity,
-                   'diversity': diversity,
-                   'specificity': specificity}
+        if quantitative:
+            self.evaluate_gen(self._test_loader, n_sampled_points=2048)
+            recon_errors = self.reconstruction_errors(self._test_loader)
+            train_set_diversity = self.compute_diversity_train_set()
+            diversity = self.compute_diversity()
+            specificity = self.compute_specificity()
+            metrics = {'recon_errors': recon_errors,
+                       'train_set_diversity': train_set_diversity,
+                       'diversity': diversity,
+                       'specificity': specificity}
 
-        outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
-        with open(outfile_path, 'w') as outfile:
-            json.dump(metrics, outfile)
+            outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
+            with open(outfile_path, 'w') as outfile:
+                json.dump(metrics, outfile)
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -166,7 +172,7 @@ class Tester:
             all_rendered_differences.append(differences_renderings)
             frames = torch.cat([renderings, differences_renderings], dim=-1)
             all_frames.append(
-                torch.cat([frames, torch.zeros_like(frames)[:2, ::]]))
+                torch.cat([frames, torch.ones_like(frames)[:2, ::]]))
 
         write_video(
             os.path.join(self._out_dir, 'latent_exploration.mp4'),
@@ -438,7 +444,7 @@ class Tester:
         save_image(grid, os.path.join(out_mesh_dir, 'latent_swapping.png'))
 
     def fit_vertices(self, target_verts, lr=5e-3, iterations=250,
-                     target_noise=0, target_landmarks=None):
+                     target_noise=0, target_landmarks=None, loss="chamfer"):
         # Scale and position target_verts
         target_verts = target_verts.unsqueeze(0).to(self._device)
         if target_landmarks is None:
@@ -465,12 +471,14 @@ class Tester:
             if i < iterations // 3:
                 er = self._manager.compute_mse_loss(
                     gen_verts[:, self.uhm_landmarks, :], target_landmarks)
-            else:
+            elif loss == "chamfer":
                 er, _ = pytorch3d.loss.chamfer_distance(gen_verts, target_verts)
+            else:
+                er = self._manager.compute_mse_loss(gen_verts, target_verts)
 
             er.backward()
             optimizer.step()
-        return gen_verts, target_verts.squeeze()
+        return gen_verts, target_verts.squeeze(), z.detach()
 
     def fit_coma_data(self, base_dir='meshes2fit',
                       noise=0, export_meshes=False):
@@ -518,7 +526,7 @@ class Tester:
                 target_landmarks *= scale
                 target_landmarks[:, 1] += 0.15
 
-            out_verts, t_verts = self.fit_vertices(
+            out_verts, t_verts, _ = self.fit_vertices(
                 target_verts, target_noise=noise,
                 target_landmarks=target_landmarks)
 
@@ -677,13 +685,17 @@ class Tester:
         v_1 = (v_1 - self._norm_dict['mean']) / self._norm_dict['std']
         v_2 = (v_2 - self._norm_dict['mean']) / self._norm_dict['std']
 
-        z_1 = self._manager.encode(v_1.unsqueeze(0).to(self._device))
-        z_2 = self._manager.encode(v_2.unsqueeze(0).to(self._device))
+        if not self._is_gan:
+            z_1 = self._manager.encode(v_1.unsqueeze(0).to(self._device))
+            z_2 = self._manager.encode(v_2.unsqueeze(0).to(self._device))
+        else:
+            z_1 = self.fit_vertices(v_1, loss="mse")[2].unsqueeze(0)
+            z_2 = self.fit_vertices(v_2, loss="mse")[2].unsqueeze(0)
 
         features = list(self._manager.template.feat_and_cont.keys())
 
         # Interpolate per feature
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled:
             z = z_1.repeat(len(features) // 2, 1)
             all_frames, rows = [], []
             for feature in features:
@@ -699,12 +711,11 @@ class Tester:
 
                 renderings = self._manager.render(gen_verts).cpu()
                 all_frames.append(renderings)
-                rows.append(make_grid(renderings, padding=10,
-                            pad_value=1, nrow=len(features)))
+                rows.append(renderings[-1])
                 z = z[-1, :].repeat(len(features) // 2, 1)
 
             save_image(
-                torch.cat(rows, dim=-2),
+                make_grid(rows, padding=10, pad_value=1, nrow=len(features)),
                 os.path.join(self._out_dir, 'interpolate_per_feature.png'))
             write_video(
                 os.path.join(self._out_dir, 'interpolate_per_feature.mp4'),
