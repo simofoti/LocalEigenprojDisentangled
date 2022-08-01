@@ -33,9 +33,10 @@ def prepare_sub_folder(output_directory):
     return checkpoint_directory
 
 
-def load_template(mesh_path):
+def load_template(mesh_path, append_contours_to_feature=False):
     mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
-    feat_and_cont = extract_feature_and_contour_from_colour(mesh)
+    feat_and_cont = extract_feature_and_contour_from_colour(
+        mesh, append_contours_to_feature)
     mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                               requires_grad=False)
     face = torch.from_numpy(mesh.faces).t().to(torch.long).contiguous()
