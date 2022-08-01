@@ -2,6 +2,7 @@ import os
 import pickle
 import torch.nn
 import trimesh
+import time
 
 import numpy as np
 
@@ -101,6 +102,7 @@ class ModelManager(torch.nn.Module):
             assert self._swap_features and not self._is_gan
 
         if self._w_lep_loss > 0:
+            start_time = time.time()
             self._local_eigenvectors = utils.compute_local_eigenvectors(
                 template=self.template,
                 k=int(self._optimization_params['local_eigendecomposition_k']))
@@ -108,6 +110,10 @@ class ModelManager(torch.nn.Module):
                 self._optimization_params['local_eigenprojection_gen_weight'])
             self._verts_std = None
             self._local_ep_means, self._local_ep_stds = None, None
+            end_time = time.time()
+            print(f"Process time eigenvectors computation = "
+                  f"{end_time - start_time}s")
+
         else:
             self._w_lep_gen_loss = 0
 
@@ -272,6 +278,7 @@ class ModelManager(torch.nn.Module):
     def initialize_local_eigenvectors(self, train_loader, normalization_dict,
                                       plot_eigenproj_distributions=False):
         if self._w_lep_loss > 0:
+            start_time = time.time()
             if self._normalized_data:  # important for projection
                 self._verts_std = normalization_dict['std']
 
@@ -322,6 +329,9 @@ class ModelManager(torch.nn.Module):
             self.template.pos = self.template.pos.to(self.device)
             if self._normalized_data:
                 self._verts_std = self._verts_std.to(self.device)
+
+            end_time = time.time()
+            print(f"Process time initialize LEP = {end_time - start_time}")
 
             if plot_eigenproj_distributions:
                 all_ep = []
