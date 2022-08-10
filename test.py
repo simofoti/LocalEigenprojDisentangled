@@ -16,8 +16,10 @@ from pytorch3d.renderer import BlendParams
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 from pytorch3d.loss.chamfer import _handle_pointcloud_input
 from pytorch3d.ops.knn import knn_points
+from torch_geometric.data import Data
 
 from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
+from evaluation_variation_predictability import VariationPredictability
 
 
 class Tester:
@@ -73,6 +75,10 @@ class Tester:
 
         # Quantitative evaluation
         if quantitative:
+            self.compute_variation_predictability(n_samples=10000, n_splits=3,
+                                                  train_split_ratio=0.01,
+                                                  lr=1e-4, epochs=100,
+                                                  batch_size=32)
             self.evaluate_gen(self._test_loader, n_sampled_points=2048)
             recon_errors = self.reconstruction_errors(self._test_loader)
             train_set_diversity = self.compute_diversity_train_set()
@@ -400,6 +406,35 @@ class Tester:
         outfile_path = os.path.join(self._out_dir, 'eval_metrics_gen.json')
         with open(outfile_path, 'w') as outfile:
             json.dump(metrics, outfile)
+
+    def compute_variation_predictability(self, n_samples, n_splits,
+                                         train_split_ratio, lr,
+                                         epochs, batch_size):
+        assert self._is_vae or self._is_gan
+
+        generated_data_list = []
+        for _ in range(n_samples):
+            z_1 = self.random_latent(n_samples=1)
+            idx_to_perturb = torch.randint(self._manager.model_latent_size, [1])
+            z_2 = z_1.clone()
+            z_2[:, idx_to_perturb] = torch.randn(1)
+            z_cat = torch.cat([z_1, z_2], dim=0)
+            gen_verts = self._manager.generate(z_cat.to(self._device))
+            verts_diff = gen_verts[0, :] - gen_verts[1, :]
+            label = torch.argmax(torch.abs(z_1 - z_2))
+            generated_data_list.append(Data(x=verts_diff.detach().cpu(),
+                                            y=label.item()))
+
+        vp = 0
+        for _ in range(n_splits):
+            vp += VariationPredictability(
+                generated_data_list, train_split_ratio, self._manager._net, lr,
+                epochs, batch_size, self._config['data']['number_of_workers'],
+                self._device)()
+
+        outfile_path = os.path.join(self._out_dir, 'eval_variation_pred.json')
+        with open(outfile_path, 'w') as outfile:
+            json.dump({"variation_predictability": vp / n_splits}, outfile)
 
     def latent_swapping(self, v_batch=None):
         if v_batch is None:
@@ -800,6 +835,9 @@ if __name__ == '__main__':
                     output_directory, configurations)
 
     tester()
+    # tester.compute_variation_predictability(
+    #     n_samples=10000, n_splits=3, train_split_ratio=0.01,
+    #     lr=1e-4, epochs=100, batch_size=32)
     # tester.direct_manipulation()
     # tester.fit_coma_data_different_noises()
     # tester.set_renderings_size(512)
