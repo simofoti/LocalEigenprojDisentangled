@@ -30,3 +30,11 @@ precomputed_facial/
 precomputed_coma/
 
 precomputed_lyhm/
+
+demo_files/
+
+.ipynb_checkpoints/
+
+precomputed_sd/
+
+demo_tog/
