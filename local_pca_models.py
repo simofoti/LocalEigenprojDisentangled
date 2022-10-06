@@ -61,7 +61,6 @@ all_vertices = []
 for i in range(16):
     np_verts = np.zeros_like(template.pos.numpy())
     for region, pca in local_pcas.items():
-        np.random.normal(size=n_components_local)
         v_l = pca.instance(np.random.normal(size=n_components_local)).points
         np_verts[template.feat_and_cont[region]['feature'], :] = v_l
     # gen_mesh = trimesh.Trimesh(vertices=np_verts,
@@ -77,7 +76,6 @@ if not os.path.isdir(output_directory):
 
 with open(os.path.join(output_directory, "vertices.pkl"), 'wb') as file:
     pickle.dump(torch_vertices, file)
-
 
 if not torch.cuda.is_available():
     device = torch.device('cpu')
