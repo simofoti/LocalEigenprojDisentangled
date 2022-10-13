@@ -26,3 +26,17 @@ precomputed_cvpr/
 precomputed_craniofacial/
 
 precomputed_facial/
+
+precomputed_coma/
+
+precomputed_lyhm/
+
+demo_files/
+
+.ipynb_checkpoints/
+
+precomputed_sd/
+
+demo_tog/
+
+demo_files_tog_sd/

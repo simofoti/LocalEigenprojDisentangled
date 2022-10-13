@@ -16,8 +16,10 @@ from pytorch3d.renderer import BlendParams
 from pytorch3d.loss.point_mesh_distance import point_face_distance
 from pytorch3d.loss.chamfer import _handle_pointcloud_input
 from pytorch3d.ops.knn import knn_points
+from torch_geometric.data import Data
 
 from evaluation_metrics import compute_all_metrics, jsd_between_point_cloud_sets
+from evaluation_variation_predictability import VariationPredictability
 
 
 class Tester:
@@ -33,8 +35,19 @@ class Tester:
         self._train_loader = train_load
         self._test_loader = test_load
         self._is_vae = self._manager.is_vae
+        self._is_gan = self._manager.is_gan
         self._is_rae = self._manager.is_rae
-        self.latent_stats = self.compute_latent_stats(train_load)
+        self._is_feature_disentangled = \
+            self._config['data']['swap_features'] or \
+            self._config['optimization']['local_eigenprojection_weight'] > 0
+        if not self._is_gan:
+            self.latent_stats = self.compute_latent_stats(train_load)
+        else:
+            latent_size = self._manager.model_latent_size
+            self.latent_stats = {'means': torch.zeros(latent_size),
+                                 'stds': torch.ones(latent_size),
+                                 'mins': -3 * torch.ones(latent_size),
+                                 'maxs': 3 * torch.ones(latent_size)}
 
         self.coma_landmarks = [
             1337, 1344, 1163, 878, 3632, 2496, 2428, 2291, 2747,
@@ -45,34 +58,40 @@ class Tester:
             8003, 22260, 12492, 27386, 1969, 31925, 31158, 20963,
             1255, 9881, 32055, 45778, 5355, 27515, 18482, 33691]
 
-    def __call__(self):
+    def __call__(self, quantitative=True):
         self.set_renderings_size(512)
         self.set_rendering_background_color([1, 1, 1])
 
         # Qualitative evaluations
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled and not self._is_gan:
             self.latent_swapping(next(iter(self._test_loader)).x)
         self.per_variable_range_experiments(use_z_stats=False)
         self.random_generation_and_rendering(n_samples=16)
         self.random_generation_and_save(n_samples=16)
         self.interpolate()
+
         if self._config['data']['dataset_type'] == 'faces':
             self.direct_manipulation()
 
         # Quantitative evaluation
-        self.evaluate_gen(self._test_loader, n_sampled_points=2048)
-        recon_errors = self.reconstruction_errors(self._test_loader)
-        train_set_diversity = self.compute_diversity_train_set()
-        diversity = self.compute_diversity()
-        specificity = self.compute_specificity()
-        metrics = {'recon_errors': recon_errors,
-                   'train_set_diversity': train_set_diversity,
-                   'diversity': diversity,
-                   'specificity': specificity}
+        if quantitative:
+            self.compute_variation_predictability(n_samples=10000, n_splits=3,
+                                                  train_split_ratio=0.01,
+                                                  lr=1e-4, epochs=100,
+                                                  batch_size=32)
+            self.evaluate_gen(self._test_loader, n_sampled_points=2048)
+            recon_errors = self.reconstruction_errors(self._test_loader)
+            train_set_diversity = self.compute_diversity_train_set()
+            diversity = self.compute_diversity()
+            specificity = self.compute_specificity()
+            metrics = {'recon_errors': recon_errors,
+                       'train_set_diversity': train_set_diversity,
+                       'diversity': diversity,
+                       'specificity': specificity}
 
-        outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
-        with open(outfile_path, 'w') as outfile:
-            json.dump(metrics, outfile)
+            outfile_path = os.path.join(self._out_dir, 'eval_metrics.json')
+            with open(outfile_path, 'w') as outfile:
+                json.dump(metrics, outfile)
 
     def _unnormalize_verts(self, verts, dev=None):
         d = self._device if dev is None else dev
@@ -121,7 +140,7 @@ class Tester:
 
     def per_variable_range_experiments(self, z_range_multiplier=1,
                                        use_z_stats=True):
-        if self._is_vae and not use_z_stats:
+        if (self._is_vae or self._is_gan) and not use_z_stats:
             latent_size = self._manager.model_latent_size
             z_means = torch.zeros(latent_size)
             z_mins = -3 * z_range_multiplier * torch.ones(latent_size)
@@ -159,7 +178,7 @@ class Tester:
             all_rendered_differences.append(differences_renderings)
             frames = torch.cat([renderings, differences_renderings], dim=-1)
             all_frames.append(
-                torch.cat([frames, torch.zeros_like(frames)[:2, ::]]))
+                torch.cat([frames, torch.ones_like(frames)[:2, ::]]))
 
         write_video(
             os.path.join(self._out_dir, 'latent_exploration.mp4'),
@@ -169,7 +188,7 @@ class Tester:
         # are shown in the same frame. Only error maps are shown.
         grid_frames = []
         grid_nrows = 8
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled:
             z_size = self._config['model']['latent_size']
             grid_nrows = z_size // len(self._manager.latent_regions)
 
@@ -220,7 +239,7 @@ class Tester:
         plt.savefig(os.path.join(self._out_dir, 'latent_exploration.svg'))
 
     def random_latent(self, n_samples, z_range_multiplier=1):
-        if self._is_vae:  # sample from normal distribution if vae
+        if self._is_vae or self._is_gan:  # sample from normal distribution
             z = torch.randn([n_samples, self._manager.model_latent_size])
         elif self._is_rae:
             z = self._manager.sample_gaussian_mixture(n_samples)
@@ -388,6 +407,35 @@ class Tester:
         with open(outfile_path, 'w') as outfile:
             json.dump(metrics, outfile)
 
+    def compute_variation_predictability(self, n_samples, n_splits,
+                                         train_split_ratio, lr,
+                                         epochs, batch_size):
+        assert self._is_vae or self._is_gan
+
+        generated_data_list = []
+        for _ in range(n_samples):
+            z_1 = self.random_latent(n_samples=1)
+            idx_to_perturb = torch.randint(self._manager.model_latent_size, [1])
+            z_2 = z_1.clone()
+            z_2[:, idx_to_perturb] = torch.randn(1)
+            z_cat = torch.cat([z_1, z_2], dim=0)
+            gen_verts = self._manager.generate(z_cat.to(self._device))
+            verts_diff = gen_verts[0, :] - gen_verts[1, :]
+            label = torch.argmax(torch.abs(z_1 - z_2))
+            generated_data_list.append(Data(x=verts_diff.detach().cpu(),
+                                            y=label.item()))
+
+        vp = 0
+        for _ in range(n_splits):
+            vp += VariationPredictability(
+                generated_data_list, train_split_ratio, self._manager._net, lr,
+                epochs, batch_size, self._config['data']['number_of_workers'],
+                self._device)()
+
+        outfile_path = os.path.join(self._out_dir, 'eval_variation_pred.json')
+        with open(outfile_path, 'w') as outfile:
+            json.dump({"variation_predictability": vp / n_splits}, outfile)
+
     def latent_swapping(self, v_batch=None):
         if v_batch is None:
             v_batch = self.random_generation(2, denormalize=False)
@@ -431,7 +479,7 @@ class Tester:
         save_image(grid, os.path.join(out_mesh_dir, 'latent_swapping.png'))
 
     def fit_vertices(self, target_verts, lr=5e-3, iterations=250,
-                     target_noise=0, target_landmarks=None):
+                     target_noise=0, target_landmarks=None, loss="chamfer"):
         # Scale and position target_verts
         target_verts = target_verts.unsqueeze(0).to(self._device)
         if target_landmarks is None:
@@ -458,12 +506,14 @@ class Tester:
             if i < iterations // 3:
                 er = self._manager.compute_mse_loss(
                     gen_verts[:, self.uhm_landmarks, :], target_landmarks)
-            else:
+            elif loss == "chamfer":
                 er, _ = pytorch3d.loss.chamfer_distance(gen_verts, target_verts)
+            else:
+                er = self._manager.compute_mse_loss(gen_verts, target_verts)
 
             er.backward()
             optimizer.step()
-        return gen_verts, target_verts.squeeze()
+        return gen_verts, target_verts.squeeze(), z.detach()
 
     def fit_coma_data(self, base_dir='meshes2fit',
                       noise=0, export_meshes=False):
@@ -511,7 +561,7 @@ class Tester:
                 target_landmarks *= scale
                 target_landmarks[:, 1] += 0.15
 
-            out_verts, t_verts = self.fit_vertices(
+            out_verts, t_verts, _ = self.fit_vertices(
                 target_verts, target_noise=noise,
                 target_landmarks=target_landmarks)
 
@@ -572,7 +622,7 @@ class Tester:
 
     @staticmethod
     def _dist_closest_point(x, y):
-        # for each point on x return distance to closest point in y
+        # for each point on x return distance to the closest point in y
         x, x_lengths, x_normals = _handle_pointcloud_input(x, None, None)
         y, y_lengths, y_normals = _handle_pointcloud_input(y, None, None)
         x_nn = knn_points(x, y, lengths1=x_lengths, lengths2=y_lengths, K=1)
@@ -652,8 +702,8 @@ class Tester:
         v_1 = None
         distances = [0]
         for i, fname in enumerate(test_list):
-            mesh_path = os.path.join(meshes_root, fname + '.ply')
-            mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
+            mesh_path = os.path.join(meshes_root, fname)
+            mesh = trimesh.load_mesh(mesh_path, process=False)
             mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                                       requires_grad=False, device='cpu')
             if i == 0:
@@ -663,20 +713,24 @@ class Tester:
                     self._manager.compute_mse_loss(v_1, mesh_verts).item())
 
         m_2_path = os.path.join(
-            meshes_root, test_list[np.asarray(distances).argmax()] + '.ply')
-        m_2 = trimesh.load_mesh(m_2_path, 'ply', process=False)
+            meshes_root, test_list[np.asarray(distances).argmax()])
+        m_2 = trimesh.load_mesh(m_2_path, process=False)
         v_2 = torch.tensor(m_2.vertices, dtype=torch.float, requires_grad=False)
 
         v_1 = (v_1 - self._norm_dict['mean']) / self._norm_dict['std']
         v_2 = (v_2 - self._norm_dict['mean']) / self._norm_dict['std']
 
-        z_1 = self._manager.encode(v_1.unsqueeze(0).to(self._device))
-        z_2 = self._manager.encode(v_2.unsqueeze(0).to(self._device))
+        if not self._is_gan:
+            z_1 = self._manager.encode(v_1.unsqueeze(0).to(self._device))
+            z_2 = self._manager.encode(v_2.unsqueeze(0).to(self._device))
+        else:
+            z_1 = self.fit_vertices(v_1, loss="mse")[2].unsqueeze(0)
+            z_2 = self.fit_vertices(v_2, loss="mse")[2].unsqueeze(0)
 
         features = list(self._manager.template.feat_and_cont.keys())
 
         # Interpolate per feature
-        if self._config['data']['swap_features']:
+        if self._is_feature_disentangled:
             z = z_1.repeat(len(features) // 2, 1)
             all_frames, rows = [], []
             for feature in features:
@@ -692,12 +746,11 @@ class Tester:
 
                 renderings = self._manager.render(gen_verts).cpu()
                 all_frames.append(renderings)
-                rows.append(make_grid(renderings, padding=10,
-                            pad_value=1, nrow=len(features)))
+                rows.append(renderings[-1])
                 z = z[-1, :].repeat(len(features) // 2, 1)
 
             save_image(
-                torch.cat(rows, dim=-2),
+                make_grid(rows, padding=10, pad_value=1, nrow=len(features)),
                 os.path.join(self._out_dir, 'interpolate_per_feature.png'))
             write_video(
                 os.path.join(self._out_dir, 'interpolate_per_feature.mp4'),
@@ -782,6 +835,9 @@ if __name__ == '__main__':
                     output_directory, configurations)
 
     tester()
+    # tester.compute_variation_predictability(
+    #     n_samples=10000, n_splits=3, train_split_ratio=0.01,
+    #     lr=1e-4, epochs=100, batch_size=32)
     # tester.direct_manipulation()
     # tester.fit_coma_data_different_noises()
     # tester.set_renderings_size(512)

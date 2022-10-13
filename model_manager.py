@@ -2,6 +2,7 @@ import os
 import pickle
 import torch.nn
 import trimesh
+import time
 
 import numpy as np
 
@@ -38,7 +39,9 @@ class ModelManager(torch.nn.Module):
         self._optimization_params = configurations['optimization']
         self._precomputed_storage_path = precomputed_storage_path
         self._normalized_data = configurations['data']['normalize_data']
+        self._epochs = self._optimization_params['epochs']
 
+        self.train_set_length = None
         self.to_mm_const = configurations['data']['to_mm_constant']
         self.device = device
         self.template = utils.load_template(
@@ -54,6 +57,7 @@ class ModelManager(torch.nn.Module):
             self._optimization_params['latent_consistency_weight'])
         self._w_laplacian_loss = float(
             self._optimization_params['laplacian_weight'])
+        self._is_gan = float(self._optimization_params['gan_disc_lr']) > 0
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
         self._w_rae_loss = float(self._optimization_params['rae_weight'])
         self._w_dip_loss = float(self._optimization_params['dip_weight'])
@@ -73,7 +77,7 @@ class ModelManager(torch.nn.Module):
         self._optimizer = torch.optim.Adam(
             self._net.parameters(),
             lr=float(self._optimization_params['lr']),
-            weight_decay=self._optimization_params['weight_decay'])
+            weight_decay=float(self._optimization_params['weight_decay']))
 
         self._latent_regions = self._compute_latent_regions()
 
@@ -95,9 +99,10 @@ class ModelManager(torch.nn.Module):
         self._batch_diagonal_idx = [(bs + 1) * i for i in range(bs)]
 
         if self._w_latent_cons_loss > 0:
-            assert self._swap_features
+            assert self._swap_features and not self._is_gan
 
         if self._w_lep_loss > 0:
+            start_time = time.time()
             self._local_eigenvectors = utils.compute_local_eigenvectors(
                 template=self.template,
                 k=int(self._optimization_params['local_eigendecomposition_k']))
@@ -105,10 +110,17 @@ class ModelManager(torch.nn.Module):
                 self._optimization_params['local_eigenprojection_gen_weight'])
             self._verts_std = None
             self._local_ep_means, self._local_ep_stds = None, None
+            end_time = time.time()
+            print(f"Process time eigenvectors computation = "
+                  f"{end_time - start_time}s")
+
+        else:
+            self._w_lep_gen_loss = 0
 
         if self._w_rae_loss > 0:
             assert self._w_kl_loss == 0
             assert self._w_dip_loss == 0 and self._w_factor_loss == 0
+            assert not self._is_gan
             self._gaussian_mixture = None
             enc_w_decay = self._optimization_params['weight_decay']
 
@@ -127,22 +139,51 @@ class ModelManager(torch.nn.Module):
                 weight_decay=float(gen_w_decay))
 
         if self._w_dip_loss > 0:
-            assert not self._swap_features
+            assert not self._swap_features and not self._is_gan
             assert self._w_kl_loss > 0
 
         if self._w_factor_loss > 0:
-            assert not self._swap_features
+            assert not self._swap_features and not self._is_gan
             assert self._w_kl_loss > 0
             self._factor_discriminator = FactorVAEDiscriminator(
                 self._model_params['latent_size']).to(device)
             self._disc_optimizer = torch.optim.Adam(
                 self._factor_discriminator.parameters(),
                 lr=float(self._optimization_params['lr']), betas=(0.5, 0.9),
-                weight_decay=self._optimization_params['weight_decay'])
+                weight_decay=float(self._optimization_params['weight_decay']))
+
+        if self._is_gan:
+            assert not self._swap_features
+            assert self._w_kl_loss <= 0
+            assert self._w_dip_loss <= 0 and self._w_factor_loss <= 0
+            assert not self._model_params['pre_z_sigmoid']
+            self._iteration_counter = 0
+            self._gan_type = self._optimization_params['gan_type']
+            if self._gan_type == 'wgan':
+                gen_opt = torch.optim.RMSprop
+                disc_opt = torch.optim.RMSprop
+                self._disc_terminal_layer = torch.nn.Sequential(
+                    torch.nn.ELU(),
+                    torch.nn.Linear(self._model_params['latent_size'], 1)
+                ).to(device)
+                self._disc_params = [*self._net.en_layers.parameters(),
+                                     *self._disc_terminal_layer.parameters()]
+            else:
+                gen_opt = torch.optim.Adam
+                disc_opt = torch.optim.SGD
+                self._disc_params = self._net.en_layers.parameters()
+            self._optimizer = gen_opt(
+                self._net.de_layers.parameters(),
+                lr=float(self._optimization_params['lr']),
+                weight_decay=float(self._optimization_params['weight_decay']))
+            self._disc_optimizer = disc_opt(
+                self._disc_params,
+                lr=float(self._optimization_params['gan_disc_lr']),
+                weight_decay=float(self._optimization_params['weight_decay']))
 
     @property
     def loss_keys(self):
-        return ['reconstruction', 'kl', 'rae', 'dip', 'factor',
+        return ['reconstruction', 'kl', 'rae', 'dip', 'factor', 'gen', 'disc',
                 'latent_consistency', 'local_eigenprojection',
                 'local_eigenprojection_gen', 'laplacian', 'tot']
 
@@ -157,6 +198,10 @@ class ModelManager(torch.nn.Module):
     @property
     def is_rae(self):
         return self._w_rae_loss > 0
+
+    @property
+    def is_gan(self):
+        return self._is_gan
 
     @property
     def model_latent_size(self):
@@ -230,8 +275,10 @@ class ModelManager(torch.nn.Module):
         return {k: [i * region_size, (i + 1) * region_size]
                 for i, k in enumerate(region_names)}
 
-    def initialize_local_eigenvectors(self, train_loader, normalization_dict):
+    def initialize_local_eigenvectors(self, train_loader, normalization_dict,
+                                      plot_eigenproj_distributions=False):
         if self._w_lep_loss > 0:
+            start_time = time.time()
             if self._normalized_data:  # important for projection
                 self._verts_std = normalization_dict['std']
 
@@ -283,6 +330,23 @@ class ModelManager(torch.nn.Module):
             if self._normalized_data:
                 self._verts_std = self._verts_std.to(self.device)
 
+            end_time = time.time()
+            print(f"Process time initialize LEP = {end_time - start_time}")
+
+            if plot_eigenproj_distributions:
+                all_ep = []
+                for data in train_loader:
+                    x = data.x.to(self.device)
+                    local_ep = self._local_eigenproject_sigend_distances(x)
+                    ep_means = torch.cat(list(self._local_ep_means.values()))
+                    ep_stds = torch.cat(list(self._local_ep_stds.values()))
+                    n_local_ep = (torch.cat(list(local_ep.values()), dim=1) -
+                                  ep_means) / ep_stds
+                    all_ep.append(n_local_ep)
+                utils.plot_eigproj(
+                    torch.cat(all_ep, dim=0),
+                    colors_as_str=list(self.template.feat_and_cont.keys()))
+
     def _local_eigenproject_sigend_distances(self, x):
         sd = utils.compute_signed_distances(x, self.template, self._verts_std)
         projections = {}
@@ -323,6 +387,8 @@ class ModelManager(torch.nn.Module):
 
         if self._w_factor_loss > 0:
             iteration_function = self._do_factor_vae_iteration
+        elif self._is_gan:
+            iteration_function = self._do_gan_iteration
         else:
             iteration_function = self._do_iteration
 
@@ -377,11 +443,11 @@ class ModelManager(torch.nn.Module):
         else:
             loss_local_eigenproj = torch.tensor(0, device=device)
 
-        if self._w_lep_loss > 0 and self._w_lep_gen_loss > 0:
+        if self._w_lep_gen_loss > 0:
             loss_local_eigenproj_gen = self._compute_local_eigenprojection_loss(
                 mu.detach(), reconstructed)
             loss_local_eigenproj_gen_weighted = loss_local_eigenproj_gen * \
-                self._w_lep_gen_loss * self._w_lep_loss
+                self._w_lep_gen_loss
         else:
             loss_local_eigenproj_gen = torch.tensor(0, device=device)
             loss_local_eigenproj_gen_weighted = torch.tensor(0, device=device)
@@ -407,10 +473,66 @@ class ModelManager(torch.nn.Module):
                 'kl': loss_kl.item(),
                 'rae': loss_rae.item(),
                 'dip': loss_dip.item(),
-                'factor': 0,
+                'factor': 0, 'gen': 0, 'disc': 0,
                 'latent_consistency': loss_z_cons.item(),
                 'local_eigenprojection': loss_local_eigenproj.item(),
                 'local_eigenprojection_gen': loss_local_eigenproj_gen.item(),
+                'laplacian': loss_laplacian.item(),
+                'tot': loss_tot.item()}
+
+    def _do_gan_iteration(self, data, device='cpu', train=True):
+        self._iteration_counter += 1 if train else 0
+        self._optimizer.zero_grad()
+
+        data = data.to(device)
+        z = torch.randn([data.x.shape[0], self.model_latent_size],
+                        device=device)
+
+        x_real = data.x
+        x_fake = self._net.decode(z)
+
+        if self._w_laplacian_loss > 0:
+            loss_laplacian = self._compute_laplacian_regularizer(x_fake)
+        else:
+            loss_laplacian = torch.tensor(0, device=device)
+
+        if self._w_lep_loss > 0:
+            loss_local_eigenproj = self._compute_local_eigenprojection_loss(
+                z.detach(), x_fake)
+        else:
+            loss_local_eigenproj = torch.tensor(0, device=device)
+
+        if self._optimization_params['gan_noise_anneal_length_percentage'] > 0:
+            noise_std = utils.annealing_coefficient(
+                self._iteration_counter,
+                self._epochs * self.train_set_length,
+                self._optimization_params['gan_noise_anneal_length_percentage'])
+            x_real += noise_std * torch.randn_like(x_real)
+            x_fake += noise_std * torch.randn_like(x_fake)
+
+        loss_gen = self._generator_loss(x_fake)
+
+        loss_tot = loss_gen + self._w_lep_loss * loss_local_eigenproj + \
+            self._w_laplacian_loss * loss_laplacian
+
+        if train:
+            loss_tot.backward()
+            self._optimizer.step()
+
+        # Train Discriminator
+        self._disc_optimizer.zero_grad()
+        loss_disc = self._discriminator_loss(x_real=x_real, x_fake=x_fake)
+
+        if train and self._iteration_counter % \
+                self._optimization_params['gan_disc_train_every'] == 0:
+            loss_disc.backward()
+            self._disc_optimizer.step()
+
+        return {'reconstruction': 0, 'kl': 0, 'rae': 0, 'dip': 0, 'factor': 0,
+                'latent_consistency': 0, 'local_eigenprojection_gen': 0,
+                'gen': loss_gen.item(),
+                'disc': loss_disc.item(),
+                'local_eigenprojection': loss_local_eigenproj.item(),
                 'laplacian': loss_laplacian.item(),
                 'tot': loss_tot.item()}
 
@@ -573,6 +695,32 @@ class ModelManager(torch.nn.Module):
                 dim=1)
         return lep_loss.mean()
 
+    def _discriminator_loss(self, x_real, x_fake):
+        if self._gan_type == 'lsgan':
+            out_real = self._net.encode(x_real)[0]
+            out_fake = self._net.encode(x_fake.detach())[0]
+            loss = torch.mean((out_real - 1) ** 2) + torch.mean(out_fake ** 2)
+            loss /= 2
+        else:  # wgan
+            out_real = self._net.encode(x_real)[0]
+            out_real = self._disc_terminal_layer(out_real)
+            out_fake = self._net.encode(x_fake.detach())[0]
+            out_fake = self._disc_terminal_layer(out_fake)
+            loss = - torch.mean(out_real) + torch.mean(out_fake)
+            for p in self._disc_params:
+                p.data.clamp_(-0.01, 0.01)
+        return loss
+
+    def _generator_loss(self, x_fake):
+        if self._gan_type == 'lsgan':
+            out_fake = self._net.encode(x_fake)[0]
+            loss = torch.mean((out_fake - 1) ** 2) / 2
+        else:  # wgan
+            out_fake = self._net.encode(x_fake)[0]
+            out_fake = self._disc_terminal_layer(out_fake)
+            loss = - torch.mean(out_fake)
+        return loss
+
     @staticmethod
     def _permute_latent_dims(latent_sample):
         perm = torch.zeros_like(latent_sample)
@@ -635,23 +783,34 @@ class ModelManager(torch.nn.Module):
 
     def log_images(self, in_data, writer, epoch, normalization_dict=None,
                    phase='train', error_max_scale=5):
-        gt_meshes = in_data.x.to(self._rend_device)
-        out_meshes = self.forward(in_data.to(self.device))[0]
-        out_meshes = out_meshes.to(self._rend_device)
+        if not self._is_gan:
+            gt_meshes = in_data.x.to(self._rend_device)
+            out_meshes = self.forward(in_data.to(self.device))[0]
+            out_meshes = out_meshes.to(self._rend_device)
 
-        if self._normalized_data:
-            mean_mesh = normalization_dict['mean'].to(self._rend_device)
-            std_mesh = normalization_dict['std'].to(self._rend_device)
-            gt_meshes = gt_meshes * std_mesh + mean_mesh
-            out_meshes = out_meshes * std_mesh + mean_mesh
+            if self._normalized_data:
+                mean_mesh = normalization_dict['mean'].to(self._rend_device)
+                std_mesh = normalization_dict['std'].to(self._rend_device)
+                gt_meshes = gt_meshes * std_mesh + mean_mesh
+                out_meshes = out_meshes * std_mesh + mean_mesh
 
-        vertex_errors = self.compute_vertex_errors(out_meshes, gt_meshes)
+            vertex_errors = self.compute_vertex_errors(out_meshes, gt_meshes)
 
-        gt_renders = self.render(gt_meshes)
-        out_renders = self.render(out_meshes)
-        errors_renders = self.render(out_meshes, vertex_errors,
-                                     error_max_scale)
-        log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
+            gt_renders = self.render(gt_meshes)
+            out_renders = self.render(out_meshes)
+            errors_renders = self.render(out_meshes, vertex_errors,
+                                         error_max_scale)
+            log = torch.cat([gt_renders, out_renders, errors_renders], dim=-1)
+        else:
+            z = torch.randn([in_data.x.shape[0], self.model_latent_size],
+                            device=self._rend_device)
+            x_gen = self.generate(z)
+            if self._normalized_data:
+                mean_mesh = normalization_dict['mean'].to(self._rend_device)
+                std_mesh = normalization_dict['std'].to(self._rend_device)
+                x_gen = x_gen * std_mesh + mean_mesh
+            log = self.render(x_gen)
+
         log = make_grid(log, padding=10, pad_value=1, nrow=self._out_grid_size)
         writer.add_image(tag=phase, global_step=epoch + 1, img_tensor=log)
 

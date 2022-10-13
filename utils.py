@@ -2,17 +2,22 @@ import os
 import yaml
 import trimesh
 import torch
+import joypy
 
 import matplotlib.cm
 import torch_geometric.transforms
 
 import networkx as nx
 import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
 from collections import Counter
 from torch_geometric.data import Data
 from torch_geometric.utils import get_laplacian, to_scipy_sparse_matrix
 from torch_geometric.utils import subgraph
 from scipy.sparse.linalg import eigsh
+from matplotlib.colors import ListedColormap
 
 
 def get_config(config):
@@ -28,9 +33,10 @@ def prepare_sub_folder(output_directory):
     return checkpoint_directory
 
 
-def load_template(mesh_path):
+def load_template(mesh_path, append_contours_to_feature=False):
     mesh = trimesh.load_mesh(mesh_path, 'ply', process=False)
-    feat_and_cont = extract_feature_and_contour_from_colour(mesh)
+    feat_and_cont = extract_feature_and_contour_from_colour(
+        mesh, append_contours_to_feature)
     mesh_verts = torch.tensor(mesh.vertices, dtype=torch.float,
                               requires_grad=False)
     face = torch.from_numpy(mesh.faces).t().to(torch.long).contiguous()
@@ -109,6 +115,7 @@ def extract_feature_and_contour_from_colour(colored,
     if append_contour_to_feature:
         for fc in features.values():
             fc['feature'] += fc['contour']
+            fc['feature'].sort()
     return features
 
 
@@ -188,3 +195,32 @@ def compute_signed_distances(x, template, std_x=None):
     modules = diff.norm(dim=-1, p=2)
     return (signs * modules).unsqueeze(-1)  # unsqueeze for mat multiplication
 
+
+def annealing_coefficient(counter, total, percentage_of_total=100):
+    return max(0, 1 - (100 * counter) / (percentage_of_total * total))
+
+
+def plot_eigproj(eigp_mat, colors_as_str=None, out_path=None):
+    eigproj_df = pd.DataFrame({"eig_" + str(idx): eigp_mat[:, idx].tolist()
+                               for idx in range(eigp_mat.shape[1])})
+    eigproj_df['gaussian'] = np.random.normal(0, 1, eigproj_df.shape[0])
+
+    if colors_as_str is not None:
+        colors = [np.fromstring(c[1:-1], sep=' ', dtype=int) for c in
+                  colors_as_str]
+        repeated_colors = [i for i in colors for _ in
+                           range((eigproj_df.shape[1] - 1) // len(colors))]
+        # repeated_colors = [np.zeros_like(repeated_colors[0])]+repeated_colors
+        repeated_colors += [255 * np.ones_like(repeated_colors[0])]
+        repeated_colors = [i / 255 for i in repeated_colors]
+        my_cmap = ListedColormap(repeated_colors)
+    else:
+        my_cmap = None
+
+    joypy.joyplot(eigproj_df, range_style='own', fade=True, ylabels=False,
+                  overlap=2, colormap=my_cmap)
+
+    if out_path is None:
+        plt.show()
+    else:
+        plt.savefig(out_path)
