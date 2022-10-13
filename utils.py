@@ -115,6 +115,7 @@ def extract_feature_and_contour_from_colour(colored,
     if append_contour_to_feature:
         for fc in features.values():
             fc['feature'] += fc['contour']
+            fc['feature'].sort()
     return features
 
 

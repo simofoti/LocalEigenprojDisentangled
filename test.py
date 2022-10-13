@@ -622,7 +622,7 @@ class Tester:
 
     @staticmethod
     def _dist_closest_point(x, y):
-        # for each point on x return distance to closest point in y
+        # for each point on x return distance to the closest point in y
         x, x_lengths, x_normals = _handle_pointcloud_input(x, None, None)
         y, y_lengths, y_normals = _handle_pointcloud_input(y, None, None)
         x_nn = knn_points(x, y, lengths1=x_lengths, lengths2=y_lengths, K=1)
