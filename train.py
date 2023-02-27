@@ -8,7 +8,7 @@ from torch.utils.tensorboard import SummaryWriter
 import utils
 from data_generation_and_loading import FaceGenerator, BodyGenerator
 from data_generation_and_loading import get_data_loaders
-from model_manager import ModelManager
+from model_manager import get_model_manager
 from test import Tester
 
 parser = argparse.ArgumentParser()
@@ -46,7 +46,7 @@ if opts.generate_data:
     data_generator(config['data']['number_of_meshes'],
                    config['data']['std_pca_latent'], opts.generate_data)
 
-manager = ModelManager(
+manager = get_model_manager(
     configurations=config, device=device,
     precomputed_storage_path=config['data']['precomputed_path'])
 
@@ -84,5 +84,5 @@ for epoch in tqdm.tqdm(range(start_epoch, config['optimization']['epochs'])):
 if manager.is_rae:
     manager.fit_gaussian_mixture(train_loader)
 
-Tester(manager, normalization_dict, train_loader, test_loader,
+Tester(manager, normalization_dict, train_loader, validation_loader,
        output_directory, config)()

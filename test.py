@@ -37,9 +37,8 @@ class Tester:
         self._is_vae = self._manager.is_vae
         self._is_gan = self._manager.is_gan
         self._is_rae = self._manager.is_rae
-        self._is_feature_disentangled = \
-            self._config['data']['swap_features'] or \
-            self._config['optimization']['local_eigenprojection_weight'] > 0
+        self._is_feature_disentangled = self._config['model_name'] in \
+            ["sd_vae", "led_vae", "led_wgan", "led_lsgan"]
         if not self._is_gan:
             self.latent_stats = self.compute_latent_stats(train_load)
         else:
@@ -801,7 +800,7 @@ if __name__ == '__main__':
     import argparse
     import utils
     from data_generation_and_loading import get_data_loaders
-    from model_manager import ModelManager
+    from model_manager import get_model_manager
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--id', type=str, default='none',
@@ -823,7 +822,7 @@ if __name__ == '__main__':
     else:
         device = torch.device('cuda')
 
-    manager = ModelManager(
+    manager = get_model_manager(
         configurations=configurations, device=device,
         precomputed_storage_path=configurations['data']['precomputed_path'])
     manager.resume(checkpoint_dir)

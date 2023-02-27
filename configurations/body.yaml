@@ -10,6 +10,8 @@ data:
   number_of_workers: 8
   swap_features: False                                                          # if True, the resulting batch size will be batch_size^2
 
+model_name: led_vae                                                             # [ae, vae, dip_vae_i, dip_vae_ii, factor_vae, sd_vae, led_vae, wgan, lsgan, led_wgan, led_lsgan, rae]
+
 optimization:
   epochs: 40
   batch_size: 16                                                                # if swap_features=True, the resulting batch size will be batch_size^2
