@@ -1,0 +1,67 @@
+data:
+  template_path: configurations/uhm_template.ply                               # vertices should be coloured (vertex semantic segmentation)
+  precomputed_path: precomputed_uhm
+  dataset_type: faces
+  pca_path: UHM_models/head_model_global_align_no_mouth_and_eyes.pkl            # to be used if data are generated with UHM
+  dataset_path: vertices_of_faces_from_UHM
+  normalize_data: True
+  to_mm_constant: 156.28255886643                                               # if already in mm set to 1, otherwise set proper multiplicative constant
+  std_pca_latent: 1                                                             # for data generation, 1 to sample from correct distribution, > 1 exaggerate face shapes
+  number_of_meshes: 10000                                                       # for data generation, > 0 if you want to generate data
+  number_of_workers: 8
+  swap_features: False                                                          # if True, the resulting batch size will be batch_size^2
+
+model_name: wgan                                                                # [ae, vae, dip_vae_i, dip_vae_ii, factor_vae, sd_vae, led_vae, wgan, lsgan, led_wgan, led_lsgan, rae]
+
+optimization:
+  epochs: 40
+  batch_size: 16                                                                # if swap_features=True, the resulting batch size will be batch_size^2
+  lr: 1e-4
+  weight_decay: 0
+
+  laplacian_weight: 10
+  kl_weight: 1e-4                                                               # if 0, AE or RAE architecture is used
+
+  gan_disc_lr: 5e-5                                                             # if > 0, GAN training. GAN training is compatible only with local eigenprojection
+  gan_noise_anneal_length_percentage: 0                                         # Percentage of total iterations across which noise is annealed
+  gan_disc_train_every: 0                                                       # If 1, train as frequently as generator
+  gan_type: wgan                                                                # [lsgan, wgan]
+
+  local_eigenprojection_weight: 0                                               # if 0, the latent is not proportional to the local eigenprojections
+  local_eigenprojection_gen_weight: 0
+  local_eigenvectors_remove_first_n: 0                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
+  local_eigenprojection_max_variance: True                                      # if True, eigenprojections with the highest variance (over the train set) are used
+  local_eigendecomposition_k: 50
+
+  latent_consistency_weight: 0                                                  # if 0, no latent consistency loss is used
+  latent_consistency_eta1: 0
+  latent_consistency_eta2: 0
+
+  rae_weight: 0                                                                 # if 0, no Regularized AE (RAE). If > 0 kl, dip, and factor weights must be 0
+  rae_embedding: 0
+  rae_grad_penalty: 0                                                           # If 0, L2 normalization is used and must set rae_gen_weight_decay. Default for GP: 0.5e-7
+  rae_gen_weight_decay: 1                                                       # Ignored if rae_grad_penalty > 0
+  rae_n_gaussians: 0
+
+  dip_weight: 0                                                                 # if 0, no dip loss is used
+  dip_type: i
+  dip_diag_lambda: 0
+  dip_offdiag_lambda: 0
+
+  factor_weight: 0                                                              # if 0, no factor VAE
+
+model:
+  sampling:
+    type: basic                                                                 # {basic, r_weighted}. Delete precomputed file if changed
+    sampling_factors: [4, 4, 4, 4]
+  spirals:
+    length: [9, 9, 9, 9]                                                        # length of spiral for each convolution. Delete precomputed file if changed.
+    dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
+  in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
+  out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
+  latent_size_id_regions: 5                                                     # size of each latent region. The latent size is obtained multiplying this number with the number of regions coloured on the template
+  pre_z_sigmoid: False
+
+logging_frequency:
+  tb_renderings: 5
+  save_weights: 20
