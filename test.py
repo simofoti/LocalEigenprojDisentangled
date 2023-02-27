@@ -188,7 +188,7 @@ class Tester:
         grid_frames = []
         grid_nrows = 8
         if self._is_feature_disentangled:
-            z_size = self._config['model']['latent_size']
+            z_size = self._manager.model_latent_size
             grid_nrows = z_size // len(self._manager.latent_regions)
 
         stacked_frames = torch.stack(all_rendered_differences)
@@ -692,7 +692,8 @@ class Tester:
             sphere.export(os.path.join(out_mesh_dir, f'selected_{i}.ply'))
 
     def interpolate(self):
-        with open(os.path.join('precomputed', 'data_split.json'), 'r') as fp:
+        with open(os.path.join(self._config['data']['precomputed_path'],
+                               'data_split.json'), 'r') as fp:
             data = json.load(fp)
         test_list = data['test']
         meshes_root = self._test_loader.dataset.root

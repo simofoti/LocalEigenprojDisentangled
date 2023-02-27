@@ -59,7 +59,7 @@ model:
     dilation: [1, 1, 1, 1]                                                      # spiral dilation for each convolution. Delete precomputed file if changed.
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 32, 64]                                                # channels of intermediate layers
-  latent_size: 60                                                               # size of the latent vector
+  latent_size_id_regions: 5                                                     # size of each latent region. The latent size is obtained multiplying this number with the number of regions coloured on the template
   pre_z_sigmoid: False
 
 logging_frequency:

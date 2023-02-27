@@ -75,11 +75,8 @@ class BaseManager(torch.nn.Module):
         meshes_all_resolutions = [self.template] + low_res_templates
         spirals_indices = self._precompute_spirals(meshes_all_resolutions)
 
-        self._latent_sizes = {
-            'id': (self._model_params['latent_size_id_regions'] *
-                   len(self.template.feat_and_cont)),
-            'exp': self._model_params['latent_size_exp']}
-        self._latent_sizes['tot'] = sum(self._latent_sizes.values())
+        self._latent_size = self._model_params['latent_size_id_regions'] *\
+            len(self.template.feat_and_cont)
 
         self._losses = None
         self._w_kl_loss = float(self._optimization_params['kl_weight'])
@@ -92,7 +89,7 @@ class BaseManager(torch.nn.Module):
 
         self._net = Model(in_channels=self._model_params['in_channels'],
                           out_channels=self._model_params['out_channels'],
-                          latent_size=self._latent_sizes['tot'],
+                          latent_size=self._latent_size,
                           spiral_indices=spirals_indices,
                           down_transform=down_transforms,
                           up_transform=up_transforms,
@@ -129,7 +126,11 @@ class BaseManager(torch.nn.Module):
 
     @property
     def model_latent_size(self):
-        return self._latent_sizes['tot']
+        return self._latent_size
+
+    @property
+    def latent_regions(self):
+        return self._latent_regions
 
     def _precompute_transformations(self):
         storage_path = os.path.join(self._precomputed_storage_path,
@@ -192,9 +193,6 @@ class BaseManager(torch.nn.Module):
         region_size = self._model_params['latent_size_id_regions']
         latent_regions = {k: [i * region_size, (i + 1) * region_size]
                           for i, k in enumerate(region_names)}
-        if self._latent_sizes['exp'] > 0:
-            latent_regions['exp'] = [self._latent_sizes['id'],
-                                     self._latent_sizes['tot']]
         return latent_regions
 
     def forward(self, data):
@@ -422,7 +420,7 @@ class VaeManager(BaseManager):
             loss_kl = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + self._w_kl_loss * loss_kl + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             loss_tot.backward()
@@ -475,7 +473,7 @@ class SdVaeManager(BaseManager):
         lg = torch.sum(lg ** 2, dim=-1)
 
         dg = z_feature.permute(1, 2, 0).unsqueeze(0) - \
-             z_feature.permute(1, 2, 0).unsqueeze(1)
+            z_feature.permute(1, 2, 0).unsqueeze(1)
         dg = dg[triu_indices[0], triu_indices[1], :, :].permute(0, 2, 1)
         dg = torch.sum(dg.reshape(-1, dg.shape[-1]) ** 2, dim=-1)
 
@@ -485,7 +483,7 @@ class SdVaeManager(BaseManager):
         dr = torch.sum(dr ** 2, dim=-1)
 
         lr = z_else.permute(1, 2, 0).unsqueeze(0) - \
-             z_else.permute(1, 2, 0).unsqueeze(1)
+            z_else.permute(1, 2, 0).unsqueeze(1)
         lr = lr[triu_indices[0], triu_indices[1], :, :].permute(0, 2, 1)
         lr = torch.sum(lr.reshape(-1, lr.shape[-1]) ** 2, dim=-1)
         zero = torch.tensor(0, device=z.device)
@@ -505,9 +503,9 @@ class SdVaeManager(BaseManager):
         loss_z_cons = self._compute_latent_consistency(z, data.swapped)
 
         loss_tot = loss_recon + \
-                   self._w_kl_loss * loss_kl + \
-                   self._w_latent_cons_loss * loss_z_cons + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_kl_loss * loss_kl + \
+            self._w_latent_cons_loss * loss_z_cons + \
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             loss_tot.backward()
@@ -550,7 +548,7 @@ class DipVaeManager(BaseManager):
         lambda_diag = self._optimization_params['dip_diag_lambda']
         lambda_offdiag = self._optimization_params['dip_offdiag_lambda']
         return lambda_offdiag * torch.sum(cov_offdiag ** 2) + \
-               lambda_diag * torch.sum((cov_diag - 1) ** 2)
+            lambda_diag * torch.sum((cov_diag - 1) ** 2)
 
     def _do_iteration(self, data, device='cpu', train=True):
         if train:
@@ -569,9 +567,9 @@ class DipVaeManager(BaseManager):
             loss_dip = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + \
-                   self._w_kl_loss * loss_kl + \
-                   self._w_dip_loss * loss_dip + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_kl_loss * loss_kl + \
+            self._w_dip_loss * loss_dip + \
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             loss_tot.backward()
@@ -594,7 +592,7 @@ class FactorVaeManager(BaseManager):
         assert not self._swap_features
         assert self._w_kl_loss > 0 and self._w_factor_loss > 0
         self._factor_discriminator = FactorVAEDiscriminator(
-            self._latent_sizes['tot']).to(device)
+            self._latent_size).to(device)
         self._disc_optimizer = torch.optim.Adam(
             self._factor_discriminator.parameters(),
             lr=float(self._optimization_params['lr']), betas=(0.5, 0.9),
@@ -633,9 +631,9 @@ class FactorVaeManager(BaseManager):
         factor_loss = (disc_z[:, 0] - disc_z[:, 1]).mean()
 
         loss_tot = loss_recon + \
-                   self._w_kl_loss * loss_kl + \
-                   self._w_laplacian_loss * loss_laplacian + \
-                   self._w_factor_loss * factor_loss
+            self._w_kl_loss * loss_kl + \
+            self._w_laplacian_loss * loss_laplacian + \
+            self._w_factor_loss * factor_loss
 
         if train:
             self._optimizer.zero_grad()
@@ -740,8 +738,8 @@ class RaeManager(BaseManager):
         loss_rae = self._compute_rae_loss(z, reconstructed)
 
         loss_tot = loss_recon + \
-                   self._w_rae_loss * loss_rae + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_rae_loss * loss_rae + \
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             loss_tot.backward()
@@ -930,7 +928,7 @@ class LedVaeManager(LedModelsManager):
         super(LedVaeManager, self).__init__(configurations, device,
                                             rendering_device,
                                             precomputed_storage_path)
-        assert self._w_lep_loss > 0 and self._latent_sizes['exp'] == 0
+        assert self._w_lep_loss > 0
 
     @property
     def loss_keys(self):
@@ -960,9 +958,9 @@ class LedVaeManager(LedModelsManager):
             loss_local_eigenproj_gen_weighted = torch.tensor(0, device=device)
 
         loss_tot = loss_recon + \
-                   self._w_kl_loss * loss_kl + \
-                   self._w_lep_loss * loss_local_eigenproj + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_kl_loss * loss_kl + \
+            self._w_lep_loss * loss_local_eigenproj + \
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             if self._w_lep_gen_loss > 0:
@@ -997,7 +995,7 @@ class AllGansManager(LedModelsManager):
             disc_opt = torch.optim.RMSprop
             self._disc_terminal_layer = torch.nn.Sequential(
                 torch.nn.ELU(),
-                torch.nn.Linear(self._latent_sizes['tot'], 1)
+                torch.nn.Linear(self._latent_size, 1)
             ).to(device)
             self._disc_params = [*self._net.en_layers.parameters(),
                                  *self._disc_terminal_layer.parameters()]
@@ -1047,7 +1045,7 @@ class AllGansManager(LedModelsManager):
         loss_gen = self._generator_loss(x_fake)
 
         loss_tot = loss_gen + self._w_lep_loss * loss_local_eigenproj + \
-                   self._w_laplacian_loss * loss_laplacian
+            self._w_laplacian_loss * loss_laplacian
 
         if train:
             loss_tot.backward()

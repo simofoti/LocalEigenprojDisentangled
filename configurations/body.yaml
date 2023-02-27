@@ -1,6 +1,6 @@
 data:
   template_path: precomputed_bodies/star_template.ply                           # vertices should be coloured (vertex semantic segmentation)
-  precomputed_path: precomputed_bodies
+  precomputed_path: precomputed_bodies_deleteme
   dataset_type: bodies                                                          # bodies = star model, faces = uhm model
   dataset_path: vertices_of_bodies_from_STAR
   normalize_data: True
@@ -26,8 +26,8 @@ optimization:
   gan_disc_train_every: 5                                                       # If 1, train as frequently as generator
   gan_type: wgan
 
-  local_eigenprojection_weight: 1                                               # if 0, the latent is not proportional to the local eigenprojections
-  local_eigenprojection_gen_weight: 0.5
+  local_eigenprojection_weight: 0.1                                             # if 0, the latent is not proportional to the local eigenprojections
+  local_eigenprojection_gen_weight: 2
   local_eigenvectors_remove_first_n: 0                                          # if 0 no eigenvectors are removed, otherwise the n initial eigenvectors are removed
   local_eigenprojection_max_variance: True                                      # if True, eigenprojections with highest variance (over train set) are used
   local_eigendecomposition_k: 50
@@ -58,7 +58,7 @@ model:
     dilation: [1, 1, 1]                                                         # spiral dilation for each convolution. Delete precomputed file if changed.
   in_channels: 3                                                                # number of input vertex features. Most likely 3 (x, y, z)
   out_channels: [32, 32, 64]                                                    # channels of intermediate layers
-  latent_size: 33                                                               # size of the latent vector
+  latent_size_id_regions: 3                                                     # size of each latent region. The latent size is obtained multiplying this number with the number of regions coloured on the template
   pre_z_sigmoid: False
 
 logging_frequency:
